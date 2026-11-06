@@ -15,15 +15,16 @@ struct PopoverView: View {
                 TransferCard(t: t)
                     .padding(.horizontal, 14)
                     .padding(.bottom, 12)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
             }
             Divider()
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Divider()
             footer
         }
-        .frame(width: 360)
-        .animation(.easeOut(duration: 0.2), value: m.transfer?.path)
+        // Fixed size: a menu-bar window that resizes while content changes rapidly
+        // (big syncs) leaves drawing artifacts.
+        .frame(width: 360, height: 480)
         .onAppear { if m.configured { m.refreshUsage() } }
     }
 
@@ -129,7 +130,7 @@ struct PopoverView: View {
                     .padding(.horizontal, 6)
                     .padding(.bottom, 6)
                 }
-                .frame(maxHeight: 300)
+                .frame(maxHeight: .infinity)
             }
         }
     }

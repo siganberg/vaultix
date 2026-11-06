@@ -189,9 +189,12 @@ final class AppModel: ObservableObject {
             let newPhase = e["phase"] as? String ?? "idle"
             statusLine = e["line"] as? String ?? ""
             if let ms = e["last_ok"] as? Double { lastOk = Date(timeIntervalSince1970: ms / 1000) }
-            if newPhase != "syncing" { transfer = nil }
+            if newPhase != "syncing" {
+                pendingTransfer = nil
+                if transfer != nil { transfer = nil }
+            }
             if newPhase != lastPhase {
-                if lastPhase == "syncing" && newPhase == "idle" { refreshUsage() }
+                if lastPhase == "syncing" && newPhase == "idle" { refreshUsage(); persistRecent() }
                 if ["error", "signedout"].contains(newPhase) && configured {
                     Notifier.post(title: newPhase == "signedout" ? "Vaultix is signed out" : "Vaultix sync problem", body: statusLine)
                 }
@@ -199,13 +202,14 @@ final class AppModel: ObservableObject {
             }
             phase = newPhase
         case "progress":
-            transfer = Transfer(
+            pendingTransfer = Transfer(
                 op: e["op"] as? String ?? "",
                 path: e["path"] as? String ?? "",
                 index: e["index"] as? Int ?? 0,
                 total: e["total"] as? Int ?? 0,
                 bytes: (e["bytes"] as? NSNumber)?.int64Value ?? 0,
                 size: (e["size"] as? NSNumber)?.int64Value ?? 0)
+            scheduleFlush()
         case "activity":
             let a = Activity(
                 op: e["op"] as? String ?? "",
@@ -213,10 +217,9 @@ final class AppModel: ObservableObject {
                 isDir: e["is_dir"] as? Bool ?? false,
                 at: Date(timeIntervalSince1970: ((e["at"] as? Double) ?? Date().timeIntervalSince1970 * 1000) / 1000),
                 original: e["original"] as? String)
-            recent.removeAll { $0.path == a.path }
-            recent.insert(a, at: 0)
-            if recent.count > 40 { recent.removeLast(recent.count - 40) }
-            if let d = try? JSONEncoder().encode(recent) { UserDefaults.standard.set(d, forKey: "recent") }
+            pendingActivities.append(a)
+            if pendingActivities.count > 40 { pendingActivities.removeFirst(pendingActivities.count - 40) }
+            scheduleFlush()
             if a.op == "conflict" {
                 Notifier.post(title: "Edited in two places", body: "Vaultix kept both versions of “\((a.original as NSString?)?.lastPathComponent ?? a.name)”.")
             }
@@ -239,6 +242,44 @@ final class AppModel: ObservableObject {
         default:
             break
         }
+    }
+
+    // MARK: coalescing
+    // A big sync emits thousands of events per second; the UI only needs a few updates a second.
+
+    private var pendingTransfer: Transfer?
+    private var pendingActivities: [Activity] = []
+    private var flushScheduled = false
+    private var lastPersist = Date.distantPast
+
+    private func scheduleFlush() {
+        guard !flushScheduled else { return }
+        flushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self] in self?.flush() }
+    }
+
+    private func flush() {
+        flushScheduled = false
+        if let t = pendingTransfer {
+            pendingTransfer = nil
+            if transfer != t { transfer = t }
+        }
+        if !pendingActivities.isEmpty {
+            var r = recent
+            for a in pendingActivities {
+                r.removeAll { $0.path == a.path }
+                r.insert(a, at: 0)
+            }
+            pendingActivities.removeAll()
+            if r.count > 40 { r.removeLast(r.count - 40) }
+            recent = r
+            if Date().timeIntervalSince(lastPersist) > 5 { persistRecent() }
+        }
+    }
+
+    private func persistRecent() {
+        lastPersist = Date()
+        if let d = try? JSONEncoder().encode(recent) { UserDefaults.standard.set(d, forKey: "recent") }
     }
 
     // MARK: commands
