@@ -49,11 +49,17 @@ WebDAV deletes are permanent (WebDAV has no trash semantics). Web and desktop-sy
 
 ## macOS sync client
 
+A SwiftUI menu-bar app (`mac/`) driving the Rust sync engine (`client/`) as a background helper.
+
 ```bash
-./scripts/build-mac.sh          # → dist/Vaultix.app + dist/Vaultix-0.1.0.dmg (universal)
+./scripts/build-mac.sh          # → dist/Vaultix.app + dist/Vaultix-<version>.dmg (universal)
 ```
 
-Open the DMG and drag Vaultix to Applications. The app is ad-hoc signed, so the first time you open it, right-click → **Open**. It asks for the server, username, password, 2FA code and the folder to sync, then lives in the menu bar.
+Open the DMG and drag Vaultix to Applications. The app is ad-hoc signed, so the first time you open it, right-click → **Open**. A sign-in window asks for your server, username and password; an app password also works and skips 2FA. You then pick the folders to sync.
+
+- **Menu-bar popover**: status, live transfer progress, recent files (click one to reveal it in Finder), pause/resume, storage usage.
+- **Settings**: start at login, notifications, account / sign out, change folders.
+- **Notifications** for conflicts and sync problems.
 
 How sync works: a three-way compare of local state, server state and the last-synced state.
 - Changes on either side propagate.
@@ -62,7 +68,7 @@ How sync works: a three-way compare of local state, server state and the last-sy
 - If the folder suddenly looks empty (unmounted disk, wiped server), it refuses to mirror the deletion.
 - Local changes sync about 2 s after they happen; remote changes are picked up within about 15 s.
 
-CLI (also works on Linux, headless):
+The app talks to the helper (`vaultix-sync agent`) over JSON lines on stdin/stdout. The helper also runs on its own (Linux too):
 
 ```bash
 vaultix-sync login https://host alice ~/Vaultix [server/folder]
@@ -70,7 +76,7 @@ vaultix-sync once     # one pass
 vaultix-sync run      # continuous
 ```
 
-Logs: `~/Library/Logs/Vaultix/sync.log`.
+Logs: `~/Library/Logs/Vaultix/sync.log`. UI previews with sample data: `mac/.build/debug/Vaultix --render-previews /tmp/previews`.
 
 ## Development
 

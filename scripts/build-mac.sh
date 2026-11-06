@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Builds Vaultix.app (menu-bar sync client) and a drag-to-install DMG.
-#   ./scripts/build-mac.sh            # universal (arm64 + x86_64) if both targets are installed
+# Builds Vaultix.app (SwiftUI menu-bar app + Rust sync helper) and a drag-to-install DMG.
+#   ./scripts/build-mac.sh            # universal (arm64 + x86_64)
 #   ./scripts/build-mac.sh --native   # current architecture only (faster)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -8,18 +8,25 @@ cd "$(dirname "$0")/.."
 VERSION=$(grep -m1 '^version' client/Cargo.toml | cut -d'"' -f2)
 OUT=dist
 APP="$OUT/Vaultix.app"
-rm -rf "$APP" "$OUT/Vaultix-$VERSION.dmg"
+rm -rf "$APP" "$OUT"/Vaultix-*.dmg
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 
-if [[ "${1:-}" != "--native" ]] && command -v rustup >/dev/null; then
+if [[ "${1:-}" != "--native" ]]; then
+  # Rust sync helper
   rustup target add aarch64-apple-darwin x86_64-apple-darwin >/dev/null
   cargo build --release -p vaultix-sync --target aarch64-apple-darwin
   cargo build --release -p vaultix-sync --target x86_64-apple-darwin
   lipo -create -output "$APP/Contents/MacOS/vaultix-sync" \
     target/aarch64-apple-darwin/release/vaultix-sync target/x86_64-apple-darwin/release/vaultix-sync
+  # SwiftUI app
+  (cd mac && swift build -c release --triple arm64-apple-macosx13.0 && swift build -c release --triple x86_64-apple-macosx13.0)
+  lipo -create -output "$APP/Contents/MacOS/Vaultix" \
+    mac/.build/arm64-apple-macosx/release/Vaultix mac/.build/x86_64-apple-macosx/release/Vaultix
 else
   cargo build --release -p vaultix-sync
   cp target/release/vaultix-sync "$APP/Contents/MacOS/vaultix-sync"
+  (cd mac && swift build -c release)
+  cp "mac/.build/release/Vaultix" "$APP/Contents/MacOS/Vaultix"
 fi
 
 # App icon from web/icon.svg (Quick Look renders the SVG; iconutil packs the sizes).
@@ -43,19 +50,19 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>CFBundleIdentifier</key><string>app.vaultix.sync</string>
   <key>CFBundleVersion</key><string>$VERSION</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
-  <key>CFBundleExecutable</key><string>vaultix-sync</string>
+  <key>CFBundleExecutable</key><string>Vaultix</string>
   <key>CFBundleIconFile</key><string>Vaultix</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>LSMinimumSystemVersion</key><string>11.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
-  <key>NSAppleEventsUsageDescription</key><string>Vaultix shows setup dialogs.</string>
   <key>NSLocalNetworkUsageDescription</key><string>Vaultix connects to your Vaultix server on your home network to sync your files.</string>
 </dict></plist>
 EOF
 
-# Ad-hoc signature (no Apple developer account needed). Use your Developer ID here to notarize.
-codesign --force --deep --sign "${CODESIGN_ID:--}" "$APP"
+# Ad-hoc signature (no Apple developer account needed). Set CODESIGN_ID to a Developer ID to notarize.
+codesign --force --sign "${CODESIGN_ID:--}" "$APP/Contents/MacOS/vaultix-sync"
+codesign --force --sign "${CODESIGN_ID:--}" "$APP"
 
 # DMG with an Applications shortcut.
 STAGE=$(mktemp -d)

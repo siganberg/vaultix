@@ -1,8 +1,7 @@
+mod agent;
 mod config;
 mod runner;
 mod sync;
-#[cfg(target_os = "macos")]
-mod mac;
 
 use anyhow::{bail, Result};
 use config::Config;
@@ -67,7 +66,7 @@ fn cli_once() -> Result<()> {
 fn headless() -> Result<()> {
     let Some(cfg) = Config::load() else { bail!("not configured; run `vaultix-sync login` first") };
     let status = Arc::new(Mutex::new(runner::Status::default()));
-    let _ctl = runner::spawn(cfg, status.clone());
+    let _ctl = runner::spawn(cfg, status.clone(), None);
     let mut last = String::new();
     loop {
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -85,25 +84,18 @@ fn main() {
         Some("login") => cli_login(&args[1..]),
         Some("once") => cli_once(),
         Some("run") => headless(),
+        Some("agent") => agent::run(),
         Some("logout") => {
             Config::remove();
             println!("Signed out.");
             Ok(())
         }
         Some("help" | "-h" | "--help") => {
-            println!("vaultix-sync            start the menu-bar app (macOS)\nvaultix-sync login <server> <user> <local-dir> [remote-dir]\nvaultix-sync once       run a single sync\nvaultix-sync run        sync continuously without UI\nvaultix-sync logout");
+            println!("vaultix-sync agent      JSON-lines helper used by Vaultix.app\nvaultix-sync login <server> <user> <local-dir> [remote-dir]\nvaultix-sync once       run a single sync\nvaultix-sync run        sync continuously without UI\nvaultix-sync logout");
             Ok(())
         }
-        _ => {
-            #[cfg(target_os = "macos")]
-            {
-                mac::app()
-            }
-            #[cfg(not(target_os = "macos"))]
-            {
-                headless()
-            }
-        }
+        // The macOS UI is Vaultix.app (SwiftUI); without arguments this helper syncs headlessly.
+        _ => headless(),
     };
     if let Err(e) = r {
         eprintln!("error: {e:#}");

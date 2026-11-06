@@ -52,7 +52,7 @@ const POLL: Duration = Duration::from_secs(15);
 const FULL: Duration = Duration::from_secs(300);
 const DEBOUNCE: Duration = Duration::from_millis(2000);
 
-pub fn spawn(cfg: Config, status: Arc<Mutex<Status>>) -> Sender<Ctl> {
+pub fn spawn(cfg: Config, status: Arc<Mutex<Status>>, events: Option<crate::sync::Sink>) -> Sender<Ctl> {
     let (tx, rx) = mpsc::channel();
     let txw = tx.clone();
     let mut watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
@@ -71,7 +71,7 @@ pub fn spawn(cfg: Config, status: Arc<Mutex<Status>>) -> Sender<Ctl> {
     }
     std::thread::spawn(move || {
         let _keep = watcher;
-        run(cfg, status, rx)
+        run(cfg, status, rx, events)
     });
     tx
 }
@@ -82,8 +82,9 @@ fn set(status: &Arc<Mutex<Status>>, phase: Phase, detail: impl Into<String>) {
     s.detail = detail.into();
 }
 
-fn run(cfg: Config, status: Arc<Mutex<Status>>, rx: mpsc::Receiver<Ctl>) {
+fn run(cfg: Config, status: Arc<Mutex<Status>>, rx: mpsc::Receiver<Ctl>, events: Option<crate::sync::Sink>) {
     let mut eng = Engine::new(cfg.clone());
+    eng.events = events;
     let st = status.clone();
     eng.progress = Box::new(move |s| set(&st, Phase::Syncing, s));
     let mut paused = cfg.paused;

@@ -171,7 +171,36 @@ pub fn login(server: &str, user: &str, pass: &str, code: Option<&str>) -> Result
     bail!("{}", v["error"].as_str().unwrap_or(status.as_str()))
 }
 
+/// Receives structured events (progress, activity) for the desktop app.
+pub type Sink = std::sync::Arc<dyn Fn(serde_json::Value) + Send + Sync>;
+
+fn now_ms() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// Wraps a reader and reports bytes read, throttled.
+struct ProgressReader<R> {
+    inner: R,
+    done: u64,
+    total: u64,
+    last: std::time::Instant,
+    report: Box<dyn FnMut(u64, u64) + Send>,
+}
+impl<R: Read> Read for ProgressReader<R> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.inner.read(buf)?;
+        self.done += n as u64;
+        if self.last.elapsed() >= Duration::from_millis(150) || n == 0 {
+            self.last = std::time::Instant::now();
+            (self.report)(self.done, self.total);
+        }
+        Ok(n)
+    }
+}
+
 pub struct Engine {
+    pub events: Option<Sink>,
+    cur: (usize, usize),
     pub cfg: Config,
     http: reqwest::blocking::Client,
     base: BTreeMap<String, Meta>,
@@ -186,7 +215,34 @@ struct LocalEntry {
 impl Engine {
     pub fn new(cfg: Config) -> Engine {
         let base = std::fs::read_to_string(cfg.state_file()).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default();
-        Engine { cfg, http: http(), base, progress: Box::new(|_| {}) }
+        Engine { events: None, cur: (0, 0), cfg, http: http(), base, progress: Box::new(|_| {}) }
+    }
+
+    fn emit(&self, v: serde_json::Value) {
+        if let Some(s) = &self.events {
+            s(v);
+        }
+    }
+
+    fn activity(&self, op: &str, k: &str, is_dir: bool) {
+        self.emit(json!({ "event": "activity", "op": op, "path": k, "is_dir": is_dir, "at": now_ms() }));
+    }
+
+    fn step(&mut self, what: &str, k: &str) {
+        self.cur.0 += 1;
+        let name = Path::new(k).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        (self.progress)(format!("{what} {name} ({}/{})", self.cur.0, self.cur.1));
+        self.emit(json!({ "event": "progress", "op": what, "path": k, "index": self.cur.0, "total": self.cur.1, "bytes": 0, "size": 0 }));
+    }
+
+    fn progress_cb(&self, op: &'static str, k: &str) -> Box<dyn FnMut(u64, u64) + Send> {
+        let sink = self.events.clone();
+        let (k, (i, n)) = (k.to_string(), self.cur);
+        Box::new(move |done, total| {
+            if let Some(s) = &sink {
+                s(json!({ "event": "progress", "op": op, "path": k, "index": i, "total": n, "bytes": done, "size": total }));
+            }
+        })
     }
 
     fn url(&self, p: &str) -> String {
@@ -349,11 +405,7 @@ impl Engine {
         }
         let work = acts.values().filter(|a| !matches!(a, Act::Same | Act::Forget | Act::Covered)).count();
         let mut sum = Summary { expected_gen: gen, ..Default::default() };
-        let mut done = 0usize;
-        let mut step = |what: &str, k: &str, progress: &dyn Fn(String)| {
-            done += 1;
-            progress(format!("{what} {} ({done}/{work})", Path::new(k).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
-        };
+        self.cur = (0, work);
 
         // ---- execute: folders & conflicts, then transfers, then deletions ----
         for (k, a) in acts.iter() {
@@ -371,14 +423,14 @@ impl Engine {
                     self.base.insert(k.clone(), Meta::dir());
                 }).map_err(Into::into),
                 Act::MkdirRemote => {
-                    step("Creating", k, &*self.progress);
+                    self.step("Creating", k);
                     self.mkdir_remote(k).map(|_| {
                         sum.expected_gen += 1;
                         self.base.insert(k.clone(), Meta::dir());
                     })
                 }
                 Act::Conflict => {
-                    step("Resolving conflict", k, &*self.progress);
+                    self.step("Resolving conflict", k);
                     sum.conflicts += 1;
                     self.conflict(k, &local[k], &remote[k])
                 }
@@ -396,7 +448,7 @@ impl Engine {
         for (k, a) in acts.iter() {
             let res = match a {
                 Act::Upload => {
-                    step("Uploading", k, &*self.progress);
+                    self.step("Uploading", k);
                     let r = self.upload(k, &local[k]);
                     if r.is_ok() {
                         sum.uploaded += 1;
@@ -405,7 +457,7 @@ impl Engine {
                     r
                 }
                 Act::Download => {
-                    step("Downloading", k, &*self.progress);
+                    self.step("Downloading", k);
                     let r = self.download(k, &remote[k]);
                     if r.is_ok() {
                         sum.downloaded += 1;
@@ -436,6 +488,7 @@ impl Engine {
                     sum.expected_gen += 1;
                     for k in &rdel {
                         log(&format!("deleted on server: {k}"));
+                        self.activity("deleted_remote", k, false);
                         self.base.remove(*k);
                         sum.deleted += 1;
                     }
@@ -460,6 +513,7 @@ impl Engine {
             match r {
                 Ok(_) => {
                     log(&format!("deleted locally: {k}"));
+                    self.activity("deleted_local", k, false);
                     self.base.remove(k);
                     sum.deleted += 1;
                 }
@@ -486,13 +540,17 @@ impl Engine {
                 .put(self.url("/api/file"))
                 .query(&[("path", self.remote_path(k)), ("mtime", l.meta.mtime.to_string())])
                 .bearer_auth(&self.cfg.token)
-                .body(reqwest::blocking::Body::sized(f, size))
+                .body(reqwest::blocking::Body::sized(
+                    ProgressReader { inner: f, done: 0, total: size, last: std::time::Instant::now(), report: self.progress_cb("Uploading", k) },
+                    size,
+                ))
                 .send()?,
         )?;
         let v: serde_json::Value = r.json()?;
         if v["hash"].as_str() == Some(l.meta.hash.as_str()) {
             self.base.insert(k.to_string(), l.meta.clone());
             log(&format!("uploaded {k}"));
+            self.activity("uploaded", k, false);
         } else {
             log(&format!("{k} changed while uploading; will retry"));
         }
@@ -507,6 +565,8 @@ impl Engine {
         let tmp = dest.with_file_name(format!(".vaultix-part-{}", unique_suffix()));
         let res = (|| -> Result<String> {
             let mut resp = self.check(self.http.get(self.url("/api/file")).query(&[("path", self.remote_path(k))]).bearer_auth(&self.cfg.token).send()?)?;
+            let mut report = self.progress_cb("Downloading", k);
+            let (mut got, mut last) = (0u64, std::time::Instant::now());
             let mut f = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
             let mut h = blake3::Hasher::new();
             let mut buf = vec![0u8; 1 << 20];
@@ -517,6 +577,11 @@ impl Engine {
                 }
                 h.update(&buf[..n]);
                 f.write_all(&buf[..n])?;
+                got += n as u64;
+                if last.elapsed() >= Duration::from_millis(150) {
+                    last = std::time::Instant::now();
+                    report(got, r.size);
+                }
             }
             f.into_inner().map_err(|e| anyhow!("{e}"))?.sync_all()?;
             Ok(h.finalize().to_hex().to_string())
@@ -538,6 +603,7 @@ impl Engine {
         let md = std::fs::metadata(&dest)?;
         self.base.insert(k.to_string(), Meta { is_dir: false, size: md.len(), mtime: mtime_ms(&md), hash });
         log(&format!("downloaded {k}"));
+        self.activity("downloaded", k, false);
         Ok(())
     }
 
@@ -553,6 +619,8 @@ impl Engine {
         let newp = p.with_file_name(format!("{stem} (conflict {host} {stamp}){ext}"));
         std::fs::rename(p, &newp)?;
         log(&format!("conflict on {k}: kept local copy as {}", newp.display()));
+        let kept = Path::new(k).with_file_name(newp.file_name().unwrap_or_default()).to_string_lossy().into_owned();
+        self.emit(json!({ "event": "activity", "op": "conflict", "path": kept, "original": k, "is_dir": l.meta.is_dir, "at": now_ms() }));
         self.base.remove(k);
         if r.is_dir {
             std::fs::create_dir_all(p)?;
