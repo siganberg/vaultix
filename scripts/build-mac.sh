@@ -50,6 +50,7 @@ cat > "$APP/Contents/Info.plist" <<EOF
   <key>LSUIElement</key><true/>
   <key>NSHighResolutionCapable</key><true/>
   <key>NSAppleEventsUsageDescription</key><string>Vaultix shows setup dialogs.</string>
+  <key>NSLocalNetworkUsageDescription</key><string>Vaultix connects to your Vaultix server on your home network to sync your files.</string>
 </dict></plist>
 EOF
 

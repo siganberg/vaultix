@@ -2,7 +2,7 @@
 
 use crate::config::{self, log, Config};
 use crate::runner::{self, Ctl, Phase, Status};
-use crate::sync::{login, LoginResult};
+use crate::sync::{is_local_network_block, LoginResult};
 use anyhow::Result;
 use std::path::PathBuf;
 use std::process::Command;
@@ -94,6 +94,37 @@ pub fn setup(prev: Option<&Config>) -> Option<Config> {
         let remote = remote.trim().trim_matches('/').to_string();
         return Some(Config { server, username: user, token, local_dir: local, remote_dir: remote, paused: false });
     }
+}
+
+const LAN_HELP: &str = "macOS is blocking Vaultix from reaching your server on the local network.\n\nIf a “Vaultix would like to find and connect to devices on your local network” prompt appeared, click Allow. Otherwise turn Vaultix on in System Settings → Privacy & Security → Local Network.\n\nThen click Try Again.";
+
+/// Login, transparently retrying while the user answers the Local Network prompt.
+fn login(server: &str, user: &str, pass: &str, code: Option<&str>) -> Result<LoginResult> {
+    for attempt in 0.. {
+        match crate::sync::login(server, user, pass, code) {
+            Err(e) if is_local_network_block(&e) => {
+                if attempt < 10 {
+                    // The first connection fails while macOS shows its permission prompt.
+                    std::thread::sleep(Duration::from_secs(2));
+                    continue;
+                }
+                let again = osa(
+                    &["on run argv", "activate", "display dialog (item 1 of argv) with title \"Vaultix\" buttons {\"Cancel\", \"Open Settings\", \"Try Again\"} default button 3 with icon caution", "button returned of result", "end run"],
+                    &[LAN_HELP],
+                );
+                match again.as_deref() {
+                    Some("Open Settings") => {
+                        let _ = Command::new("open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_LocalNetwork").spawn();
+                        let _ = osa(&["on run argv", "activate", "display dialog \"Turn on Vaultix under Local Network, then click Try Again.\" with title \"Vaultix\" buttons {\"Try Again\"} default button 1", "end run"], &[]);
+                    }
+                    Some("Try Again") => {}
+                    _ => return Err(e),
+                }
+            }
+            r => return r,
+        }
+    }
+    unreachable!()
 }
 
 /* ---------- launch at login ---------- */

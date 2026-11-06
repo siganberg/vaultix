@@ -172,7 +172,14 @@ fn run(cfg: Config, status: Arc<Mutex<Status>>, rx: mpsc::Receiver<Ctl>) {
                     set(&status, Phase::SignedOut, "");
                 } else {
                     let net = e.chain().any(|c| c.downcast_ref::<reqwest::Error>().is_some_and(|r| r.is_connect() || r.is_timeout()));
-                    set(&status, if net { Phase::Offline } else { Phase::Error }, if net { "can't reach server".to_string() } else { msg });
+                    let detail = if crate::sync::is_local_network_block(&e) {
+                        "allow Local Network access in System Settings".to_string()
+                    } else if net {
+                        "can't reach server".to_string()
+                    } else {
+                        msg
+                    };
+                    set(&status, if net { Phase::Offline } else { Phase::Error }, detail);
                     retry_at = Instant::now() + Duration::from_secs(BACKOFF[backoff.min(BACKOFF.len() - 1)]);
                     backoff += 1;
                     need = true;

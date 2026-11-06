@@ -128,6 +128,13 @@ pub enum LoginResult {
     Token(String),
     NeedCode,
 }
+/// macOS returns EHOSTUNREACH ("No route to host", os error 65) when Local Network
+/// privacy blocks an app from reaching a LAN address.
+pub fn is_local_network_block(e: &anyhow::Error) -> bool {
+    e.chain().any(|c| c.downcast_ref::<std::io::Error>().is_some_and(|io| io.raw_os_error() == Some(65)))
+        || format!("{e:#}").contains("os error 65")
+}
+
 pub fn login(server: &str, user: &str, pass: &str, code: Option<&str>) -> Result<LoginResult> {
     let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "Mac".into());
     let res = http()
