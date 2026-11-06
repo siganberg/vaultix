@@ -35,6 +35,15 @@ docker exec -it vaultix vaultix-server user reset-2fa alice
 docker exec -it vaultix vaultix-server user list
 ```
 
+## Sharing
+
+Right-click a file or folder in the web app:
+
+- **Share link…**: anyone with the link can view the file or browse the folder (with previews), and download single files or everything as a zip. Options: password, expiry, view-only (downloads off).
+- **Request files…** (folders): an upload-only page where anyone with the link can drop files into that folder without seeing what's in it. Options: password, expiry, max file size, a message for uploaders. Name clashes are auto-renamed, so nothing is overwritten, and the uploader's name (optional) is recorded.
+
+All links are listed under **Shared** in the sidebar, with view/upload counts; edit or delete them there. Links use 128-bit random tokens (`/s/<token>`), password attempts are rate-limited, and links keep working when the shared item is moved or renamed.
+
 ## WebDAV
 
 | URL | |

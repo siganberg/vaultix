@@ -240,7 +240,7 @@ async fn verify_login(s: &S, req: &LoginReq) -> R<(i64, String)> {
     Ok((user.id, username))
 }
 
-fn is_https(headers: &HeaderMap, s: &S) -> bool {
+pub fn is_https(headers: &HeaderMap, s: &S) -> bool {
     match s.cookie_secure.as_str() {
         "true" => true,
         "false" => false,

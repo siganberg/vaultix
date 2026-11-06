@@ -126,3 +126,9 @@ pub fn valid_username(u: &str) -> bool {
         && u.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || "._-".contains(c))
         && !u.starts_with('.')
 }
+
+/// Query-string bool accepting `1`/`0`/`true`/`false`/`yes`/`on` (browsers send `download=1`).
+pub fn de_flag<'de, D: serde::Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
+    let s: Option<String> = serde::Deserialize::deserialize(d)?;
+    Ok(matches!(s.as_deref().map(str::to_ascii_lowercase).as_deref(), Some("1" | "true" | "yes" | "on")))
+}

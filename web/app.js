@@ -194,11 +194,14 @@ const S = {
   sort: { key: 'name', dir: 1 },
   query: '',
   usage: null,
+  shares: [],
+  sharedPaths: new Set(),
 };
 
 function parseHash() {
   const raw = location.hash.replace(/^#\/?/, '');
   if (raw.startsWith('trash')) return { route: 'trash' };
+  if (raw.startsWith('shared')) return { route: 'shared' };
   if (raw.startsWith('settings')) return { route: 'settings' };
   const p = raw.replace(/^files\/?/, '');
   return { route: 'files', path: p.split('/').filter(Boolean).map(decodeURIComponent).join('/') };
@@ -295,6 +298,7 @@ function renderShell() {
   const side = h('aside', { class: 'side' },
     h('div', { class: 'brand' }, h('img', { src: '/icon.svg', alt: '' }), 'Vaultix'),
     nav('files', 'folder', 'All files'),
+    nav('shared', 'link', 'Shared'),
     nav('trash', 'trash', 'Trash'),
     nav('settings', 'settings', 'Settings'),
     h('div', { class: 'grow' }),
@@ -363,6 +367,7 @@ function renderMain(keepSearchFocus) {
   const main = $('#main'); if (!main) return;
   const active = document.activeElement && document.activeElement.id === 'search';
   if (S.route === 'trash') main.replaceChildren(topBar(false), ...trashView());
+  else if (S.route === 'shared') main.replaceChildren(topBar(false), ...sharedView());
   else if (S.route === 'settings') main.replaceChildren(topBar(false), ...settingsView());
   else main.replaceChildren(topBar(!S.query), filesToolbar(), filesContent());
   if (active || keepSearchFocus) { const si = $('#search'); si.focus(); si.setSelectionRange(si.value.length, si.value.length); }
@@ -391,6 +396,7 @@ function filesToolbar() {
       h('span', { class: 'count' }, `${n} selected`),
       h('button', { class: 'btn', onclick: () => download(items) }, icon('download'), 'Download'),
       h('button', { class: 'btn', onclick: () => moveDialog(items) }, icon('move'), 'Move'),
+      n === 1 && h('button', { class: 'btn', onclick: () => shareDialog(items[0].path, items[0].is_dir, 'link') }, icon('link'), 'Share'),
       n === 1 && h('button', { class: 'btn', onclick: () => rename(items[0]) }, icon('edit'), 'Rename'),
       h('button', { class: 'btn danger', onclick: () => remove(items) }, icon('trash'), 'Delete')));
   }
@@ -399,6 +405,10 @@ function filesToolbar() {
     h('button', { class: S.view === 'list' ? 'on' : '', title: 'List', onclick: () => setView('list') }, icon('list')),
     h('button', { class: S.view === 'grid' ? 'on' : '', title: 'Grid', onclick: () => setView('grid') }, icon('grid')));
   return h('div', { class: 'toolbar' }, h('div', { class: 'title' }, title),
+    !S.query && S.path && h('button', { class: 'btn ghost icon', title: 'Share this folder', onclick: (ev) => { const r = ev.currentTarget.getBoundingClientRect(); openMenu(r.left, r.bottom + 6, [
+      { icon: 'link', label: 'Share link…', fn: () => shareDialog(S.path, true, 'link') },
+      { icon: 'upload', label: 'Request files…', fn: () => shareDialog(S.path, true, 'upload') },
+    ]); } }, icon('link')),
     !S.query && h('button', { class: 'btn', onclick: newFolder }, icon('newfolder'), h('span', { class: 'hide-sm' }, 'New folder')),
     !S.query && h('button', { class: 'btn primary', onclick: (e) => { const r = e.currentTarget.getBoundingClientRect(); openMenu(r.left, r.bottom + 6, [
       { icon: 'upload', label: 'Upload files', fn: () => pickFiles(false) },
@@ -427,6 +437,9 @@ function itemMenu(ev, e) {
   openMenu(ev.clientX, ev.clientY, [
     one && { icon: e.is_dir ? 'folder' : 'open', label: e.is_dir ? 'Open' : 'Preview', fn: () => open(e) },
     { icon: 'download', label: 'Download', fn: () => download(items) },
+    one && { icon: 'link', label: 'Share link…', fn: () => shareDialog(e.path, e.is_dir, 'link') },
+    one && e.is_dir && { icon: 'upload', label: 'Request files…', fn: () => shareDialog(e.path, true, 'upload') },
+    one && '-',
     one && { icon: 'edit', label: 'Rename', fn: () => rename(e) },
     { icon: 'move', label: 'Move to…', fn: () => moveDialog(items) },
     S.query && one && { icon: 'folder', label: 'Show in folder', fn: () => { S.query = ''; go(parentOf(e.path)); } },
@@ -490,7 +503,7 @@ function filesContent() {
         : ficon(e);
       const t = h('div', { class: 'tile' + (S.sel.has(e.path) ? ' sel' : ''), onclick: onClick(e), oncontextmenu: (ev) => itemMenu(ev, e) },
         ck(e), h('div', { class: 'thumb' }, thumb),
-        h('div', { class: 'cap' }, h('b', { title: e.name }, e.name), h('small', {}, e.is_dir ? (S.query ? parentOf(e.path) || 'All files' : 'Folder') : fmtSize(e.size) + ' · ' + fmtDate(e.mtime))));
+        h('div', { class: 'cap' }, h('b', { title: e.name }, S.sharedPaths.has(e.path) && h('span', { class: 'shared-badge', title: 'Shared' }, icon('link')), e.name), h('small', {}, e.is_dir ? (S.query ? parentOf(e.path) || 'All files' : 'Folder') : fmtSize(e.size) + ' · ' + fmtDate(e.mtime))));
       draggable(t, e);
       if (e.is_dir) dropTarget(t, e.path);
       g.append(t);
@@ -508,7 +521,7 @@ function filesContent() {
       const tr = h('tr', { class: 'row' + (S.sel.has(e.path) ? ' sel' : ''), onclick: onClick(e), oncontextmenu: (ev) => itemMenu(ev, e) },
         h('td', {}, ck(e)),
         h('td', { class: 'name' }, h('div', { class: 'nm' }, ficon(e), h('div', { style: 'min-width:0;display:flex;flex-direction:column' },
-          h('span', { title: e.name }, e.name), S.query && h('small', { style: 'color:var(--faint);font-size:12px;overflow:hidden;text-overflow:ellipsis' }, parentOf(e.path) || 'All files')))),
+          h('span', { title: e.name }, e.name, S.sharedPaths.has(e.path) && h('span', { class: 'shared-badge', title: 'Shared' }, icon('link'))), S.query && h('small', { style: 'color:var(--faint);font-size:12px;overflow:hidden;text-overflow:ellipsis' }, parentOf(e.path) || 'All files')))),
         h('td', { class: 'meta hide-sm' }, e.is_dir ? '—' : fmtSize(e.size)),
         h('td', { class: 'meta' }, fmtDate(e.mtime)),
         h('td', { class: 'act' }, h('button', { class: 'btn ghost icon more', onclick: (ev) => { ev.stopPropagation(); itemMenu(ev, e); } }, icon('more'))));
@@ -788,6 +801,148 @@ function trashView() {
   return [toolbar, content];
 }
 
+/* ================= sharing ================= */
+
+async function loadShares() {
+  try {
+    S.shares = (await api('GET', '/api/shares')).shares;
+    S.sharedPaths = new Set(S.shares.filter((x) => !x.expired).map((x) => x.path));
+  } catch {}
+}
+const shareUrl = (sh) => location.origin + sh.url;
+const DAY = 86400;
+const SIZE_LIMITS = [['', 'No limit'], [100 * 2 ** 20, '100 MB'], [2 ** 30, '1 GB'], [5 * 2 ** 30, '5 GB'], [20 * 2 ** 30, '20 GB']];
+
+async function copyText(t, msg = 'Link copied') {
+  try { await navigator.clipboard.writeText(t); toast(msg); } catch { prompt2('Copy this link', { value: t, ok: 'Done' }); }
+}
+
+async function shareDialog(path, isDir, kind) {
+  await loadShares();
+  let sh = S.shares.find((x) => x.path === path && x.kind === kind && !x.expired) || null;
+  const name = baseName(path) || 'All files';
+  await modal((m, close) => {
+    const pw = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
+    const rmPw = h('input', { type: 'checkbox' });
+    const exp = h('select', { class: 'input' },
+      [['never', 'Never'], ['1', 'In 1 day'], ['7', 'In 7 days'], ['30', 'In 30 days'], ['custom', 'On a date…']].map(([v, l]) => h('option', { value: v }, l)));
+    const expDate = h('input', { class: 'input', type: 'date' });
+    const dl = h('input', { type: 'checkbox' });
+    const note = h('textarea', { class: 'input', rows: '2', placeholder: 'e.g. Please send the STL files for the bracket.' });
+    const max = h('select', { class: 'input' }, SIZE_LIMITS.map(([v, l]) => h('option', { value: String(v) }, l)));
+    const syncExp = () => expDate.classList.toggle('hidden', exp.value !== 'custom');
+    exp.addEventListener('change', syncExp);
+    function fill() {
+      pw.value = '';
+      pw.placeholder = sh && sh.has_password ? 'Password set (type to change)' : 'No password';
+      rmPw.checked = false;
+      dl.checked = sh ? sh.allow_download : true;
+      note.value = (sh && sh.note) || '';
+      max.value = sh && sh.max_size ? String(sh.max_size) : '';
+      if (sh && sh.expires_at) {
+        exp.value = 'custom';
+        expDate.value = new Date(sh.expires_at * 1000).toISOString().slice(0, 10);
+      } else { exp.value = 'never'; expDate.value = ''; }
+      syncExp();
+    }
+    function payload() {
+      let expires_at = null;
+      if (exp.value === 'custom' && expDate.value) expires_at = Math.floor(new Date(expDate.value + 'T23:59:59').getTime() / 1000);
+      else if (exp.value !== 'never' && exp.value !== 'custom') expires_at = Math.floor(Date.now() / 1000) + Number(exp.value) * DAY;
+      const p = { path, kind, expires_at, allow_download: dl.checked, note: note.value, max_size: max.value ? Number(max.value) : null };
+      if (pw.value) p.password = pw.value; else if (rmPw.checked) p.password = '';
+      return p;
+    }
+    const err = h('div', { class: 'err' });
+    async function save(create) {
+      err.textContent = '';
+      try {
+        const p = payload();
+        if (create) { sh = await api('POST', '/api/shares', p); copyText(shareUrl(sh)); }
+        else { sh = await api('POST', '/api/shares/update', { ...p, id: sh.id }); toast('Link updated'); }
+        await loadShares();
+        render();
+      } catch (e) { err.textContent = e.message; }
+    }
+    function render() {
+      const title = kind === 'link' ? `Share “${name}”` : `Request files into “${name}”`;
+      const desc = kind === 'link'
+        ? `Anyone with the link can view this ${isDir ? 'folder' : 'file'}.`
+        : 'Anyone with the link can upload files into this folder. They can’t see what’s already in it.';
+      const linkBox = sh && h('div', { class: 'linkbox' },
+        h('input', { class: 'input mono-in', readonly: true, value: shareUrl(sh), onfocus: (e) => e.target.select() }),
+        h('button', { class: 'btn primary', onclick: () => copyText(shareUrl(sh)) }, 'Copy'),
+        h('a', { class: 'btn icon', href: shareUrl(sh), target: '_blank', rel: 'noopener', title: 'Open link' }, icon('open')));
+      const stats = sh && h('div', { class: 'share-stats' }, kind === 'link'
+        ? `${sh.views} view${sh.views === 1 ? '' : 's'}`
+        : `${sh.uploads} file${sh.uploads === 1 ? '' : 's'} received`, ` · created ${fmtDate(sh.created_at * 1000)}`);
+      m.replaceChildren(
+        h('h2', {}, title), h('p', {}, desc), linkBox || '', stats || '',
+        h('div', { class: 'opts' },
+          h('div', { class: 'field' }, h('span', {}, 'Password'), pw,
+            sh && sh.has_password && h('label', { class: 'chk' }, rmPw, 'Remove password')),
+          h('div', { class: 'row2' },
+            h('label', { class: 'field' }, h('span', {}, 'Link expires'), exp, expDate),
+            kind === 'link'
+              ? h('div', { class: 'field' }, h('span', {}, 'Permissions'), h('label', { class: 'chk', style: 'height:40px;margin:0' }, dl, 'Allow downloads'))
+              : h('label', { class: 'field' }, h('span', {}, 'Max file size'), max)),
+          kind === 'upload' && h('label', { class: 'field' }, h('span', {}, 'Message for uploaders'), note)),
+        err,
+        h('div', { class: 'actions' },
+          sh && h('button', { class: 'btn danger', style: 'margin-right:auto', onclick: async () => {
+            if (!(await confirm2('Delete this link?', 'People with the link will no longer be able to open it.', { ok: 'Delete link', danger: true }))) return;
+            try { await api('POST', '/api/shares/revoke', { id: sh.id }); await loadShares(); toast('Link deleted'); close(); renderMain(); } catch (e) { fail(e); }
+          } }, 'Delete link'),
+          h('button', { class: 'btn', onclick: () => { close(); renderMain(); } }, sh ? 'Done' : 'Cancel'),
+          h('button', { class: 'btn primary', onclick: () => save(!sh) }, sh ? 'Save changes' : (kind === 'link' ? 'Create link' : 'Create request link'))));
+      fill();
+    }
+    m.classList.add('wide');
+    render();
+  });
+}
+
+function sharedView() {
+  const content = h('div', { class: 'content' }, h('div', { class: 'empty' }, 'Loading…'));
+  const toolbar = h('div', { class: 'toolbar' }, h('div', { class: 'title' }, 'Shared'));
+  (async () => {
+    await loadShares();
+    if (!S.shares.length) {
+      content.replaceChildren(h('div', { class: 'empty' }, h('div', { class: 'big' }, icon('link')), h('h3', {}, 'Nothing shared yet'),
+        h('div', {}, 'Right-click a file or folder and choose “Share link…” or “Request files…”.')));
+      return;
+    }
+    const tbody = h('tbody');
+    for (const sh of S.shares) {
+      const e = { name: sh.name, is_dir: sh.is_dir };
+      const sub = [];
+      if (!sh.exists) sub.push(h('span', { class: 'warn' }, 'Item no longer exists'));
+      else sub.push(parentOf(sh.path) || 'All files');
+      if (sh.has_password) sub.push(' · 🔒 password');
+      if (sh.kind === 'upload' && sh.recent_uploads.length) {
+        const u = sh.recent_uploads[0];
+        sub.push(` · last: ${u.name}${u.uploader ? ' from ' + u.uploader : ''}`);
+      }
+      const expires = sh.expired ? h('span', { class: 'warn' }, 'Expired') : sh.expires_at ? fmtDate(sh.expires_at * 1000) : 'Never';
+      tbody.append(h('tr', { class: 'row' + (sh.expired || !sh.exists ? ' dim' : '') },
+        h('td', { class: 'name' }, h('div', { class: 'nm' }, ficon(e), h('div', { style: 'min-width:0;display:flex;flex-direction:column' },
+          h('span', {}, sh.name), h('small', { style: 'color:var(--faint);font-size:12px;overflow:hidden;text-overflow:ellipsis' }, sub)))),
+        h('td', {}, h('span', { class: 'pill ' + (sh.kind === 'link' ? 'p-link' : 'p-up') }, sh.kind === 'link' ? 'Link' : 'File request')),
+        h('td', { class: 'meta hide-sm' }, sh.kind === 'link' ? `${sh.views} view${sh.views === 1 ? '' : 's'}` : `${sh.uploads} received`),
+        h('td', { class: 'meta hide-sm' }, expires),
+        h('td', { class: 'act', style: 'width:auto' }, h('div', { style: 'display:flex;gap:6px;justify-content:flex-end' },
+          h('button', { class: 'btn', onclick: () => copyText(shareUrl(sh)) }, 'Copy link'),
+          h('button', { class: 'btn ghost icon', title: 'Edit', onclick: async () => { await shareDialog(sh.path, sh.is_dir, sh.kind); renderMain(); } }, icon('settings')),
+          h('button', { class: 'btn ghost icon danger', title: 'Delete link', onclick: async () => {
+            if (!(await confirm2('Delete this link?', `“${sh.name}” will no longer be reachable through it.`, { ok: 'Delete link', danger: true }))) return;
+            try { await api('POST', '/api/shares/revoke', { id: sh.id }); renderMain(); } catch (er) { fail(er); }
+          } }, icon('x'))))));
+    }
+    content.replaceChildren(h('table', { class: 'list' }, h('thead', {}, h('tr', {}, h('th', {}, 'Name'), h('th', {}, 'Type'), h('th', { class: 'hide-sm' }, 'Activity'), h('th', { class: 'hide-sm' }, 'Expires'), h('th'))), tbody));
+  })();
+  return [toolbar, content];
+}
+
 /* ================= settings ================= */
 
 function settingsView() {
@@ -926,6 +1081,7 @@ addEventListener('keydown', (e) => {
 async function boot() {
   try { S.me = await api('GET', '/api/me'); } catch { return showLogin(); }
   renderShell();
+  loadShares().then(() => { if (S.route === 'files') renderMain(); });
   await route();
 }
 boot();

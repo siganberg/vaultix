@@ -1,6 +1,7 @@
 mod auth;
 mod db;
 mod files;
+mod shares;
 mod util;
 mod webdav;
 
@@ -26,6 +27,8 @@ pub struct AppState {
     pub data_dir: PathBuf,
     pub cookie_secure: String,
     pub login_fails: Mutex<HashMap<String, (u32, i64)>>,
+    /// Server-wide secret for keyed values (share unlock cookies).
+    pub secret: String,
     pub dav_cache: Mutex<HashMap<String, (i64, String, i64)>>,
     gens: Mutex<HashMap<i64, u64>>,
     boot: u64,
@@ -52,6 +55,8 @@ const INDEX: &str = include_str!("../../web/index.html");
 const APP_JS: &str = include_str!("../../web/app.js");
 const APP_CSS: &str = include_str!("../../web/app.css");
 const ICON: &str = include_str!("../../web/icon.svg");
+const SHARE_HTML: &str = include_str!("../../web/share.html");
+const SHARE_JS: &str = include_str!("../../web/share.js");
 
 fn asset(ct: &'static str, body: &'static str, cache: &'static str) -> Response {
     ([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, cache)], body).into_response()
@@ -62,6 +67,13 @@ async fn static_fallback(uri: Uri) -> Response {
         "/app.js" => asset("text/javascript; charset=utf-8", APP_JS, "no-cache"),
         "/app.css" => asset("text/css; charset=utf-8", APP_CSS, "no-cache"),
         "/icon.svg" => asset("image/svg+xml", ICON, "public, max-age=86400"),
+        "/share.js" => asset("text/javascript; charset=utf-8", SHARE_JS, "no-cache"),
+        p if p.starts_with("/s/") => {
+            let mut r = asset("text/html; charset=utf-8", SHARE_HTML, "no-cache");
+            // Share pages are reached from other sites; never leak the token via Referer.
+            r.headers_mut().insert("x-robots-tag", HeaderValue::from_static("noindex, nofollow"));
+            r
+        }
         p if p.starts_with("/api/") => util::AppError::not_found().into_response(),
         _ => asset("text/html; charset=utf-8", INDEX, "no-cache"),
     }
@@ -104,12 +116,21 @@ fn router(state: S) -> Router {
         .route("/api/usage", get(files::usage))
         .route("/api/version", get(files::version))
         .route("/api/manifest", get(files::manifest))
+        .route("/api/shares", get(shares::list).post(shares::create))
+        .route("/api/shares/update", post(shares::update))
+        .route("/api/shares/revoke", post(shares::revoke))
+        .route("/api/public/{token}", get(shares::info))
+        .route("/api/public/{token}/unlock", post(shares::unlock))
+        .route("/api/public/{token}/list", get(shares::list_dir))
         .fallback(static_fallback)
         .layer(CompressionLayer::new());
     // File streams: no compression (keeps Range requests & throughput intact), no body limit.
     let file_api = Router::new()
         .route("/api/file", get(files::download).put(files::upload))
         .route("/api/zip", get(files::zip))
+        .route("/api/public/{token}/file", get(shares::file))
+        .route("/api/public/{token}/zip", get(shares::zip))
+        .route("/api/public/{token}/upload", axum::routing::put(shares::upload))
         .layer(DefaultBodyLimit::disable());
     let dav = Router::new()
         .route("/dav", any(webdav::handle))
@@ -225,9 +246,18 @@ async fn main() -> anyhow::Result<()> {
     std::fs::create_dir_all(data_dir.join("users"))?;
     std::fs::create_dir_all(data_dir.join("tmp"))?;
     let conn = db::open(&data_dir.join("vaultix.db"))?;
+    let secret: String = match conn.query_row("SELECT value FROM settings WHERE key = 'secret'", [], |r| r.get(0)).optional()? {
+        Some(s) => s,
+        None => {
+            let s = random_hex(32);
+            conn.execute("INSERT INTO settings (key, value) VALUES ('secret', ?1)", [&s])?;
+            s
+        }
+    };
     let state = Arc::new(AppState {
         db: Mutex::new(conn),
         data_dir: data_dir.clone(),
+        secret,
         cookie_secure: env("VAULTIX_COOKIE_SECURE", "auto"),
         login_fails: Mutex::new(HashMap::new()),
         dav_cache: Mutex::new(HashMap::new()),

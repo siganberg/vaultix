@@ -79,13 +79,18 @@ pub async fn list(auth: Auth, State(s): State<S>, Query(q): Query<PathQ>) -> R<J
 #[derive(Deserialize)]
 pub struct GetQ {
     path: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_flag")]
     download: bool,
 }
 
 pub async fn download(auth: Auth, State(s): State<S>, Query(q): Query<GetQ>, req: Request) -> R<Response> {
     let rel = clean_rel(&q.path)?;
     let p = root(&s, &auth).join(&rel);
+    serve_file(p, q.download, req).await
+}
+
+/// Streams a file with Range support and safe headers (shared with public links).
+pub async fn serve_file(p: PathBuf, download: bool, req: Request) -> R<Response> {
     let md = tokio::fs::metadata(&p).await?;
     if md.is_dir() {
         return Err(AppError::bad("That's a folder"));
@@ -95,7 +100,7 @@ pub async fn download(auth: Auth, State(s): State<S>, Query(q): Query<GetQ>, req
     let ct = res.headers().get(header::CONTENT_TYPE).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
     // Active content (html/svg/xml) must never render inline on our origin.
     let risky = ct.contains("html") || ct.contains("svg") || ct.contains("xml") || ct.contains("javascript");
-    let disp = if q.download || risky { "attachment" } else { "inline" };
+    let disp = if download || risky { "attachment" } else { "inline" };
     let h = res.headers_mut();
     h.insert(
         header::CONTENT_DISPOSITION,
@@ -222,6 +227,12 @@ pub async fn mv(auth: Auth, State(s): State<S>, Json(q): Json<MoveReq>) -> R<Jso
     tokio::fs::rename(&src, &dst).await?;
     s.db.lock().unwrap().execute(
         "UPDATE OR REPLACE hash_cache SET path = ?3 || substr(path, length(?2) + 1)
+         WHERE user_id = ?1 AND (path = ?2 OR substr(path, 1, length(?2) + 1) = ?2 || '/')",
+        params![auth.uid, from, to],
+    )?;
+    // Keep share links pointing at moved/renamed items.
+    s.db.lock().unwrap().execute(
+        "UPDATE shares SET path = ?3 || substr(path, length(?2) + 1)
          WHERE user_id = ?1 AND (path = ?2 OR substr(path, 1, length(?2) + 1) = ?2 || '/')",
         params![auth.uid, from, to],
     )?;
@@ -484,7 +495,16 @@ pub struct ZipQ {
 pub async fn zip(auth: Auth, State(s): State<S>, Query(q): Query<ZipQ>) -> R<Response> {
     let paths: Vec<String> = serde_json::from_str(&q.paths).map_err(|_| AppError::bad("Invalid paths"))?;
     let rels = paths.iter().map(|p| clean_rel(p)).collect::<R<Vec<_>>>()?;
-    let root = root(&s, &auth);
+    let name = if paths.len() == 1 {
+        Path::new(&paths[0]).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "files".into())
+    } else {
+        "vaultix-files".into()
+    };
+    zip_response(&s, root(&s, &auth), rels, &name).await
+}
+
+/// Zips `rels` (relative to `root`) into a temp file and streams it.
+pub async fn zip_response(s: &S, root: PathBuf, rels: Vec<String>, name: &str) -> R<Response> {
     let tmp = s.data_dir.join("tmp").join(format!("{}.zip", random_hex(12)));
     let tmp2 = tmp.clone();
     tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
@@ -522,11 +542,6 @@ pub async fn zip(auth: Auth, State(s): State<S>, Query(q): Query<ZipQ>) -> R<Res
     let file = tokio::fs::File::open(&tmp).await?;
     let len = file.metadata().await?.len();
     let _ = tokio::fs::remove_file(&tmp).await; // unlinked; stays readable while open
-    let name = if paths.len() == 1 {
-        Path::new(&paths[0]).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "files".into())
-    } else {
-        "vaultix-files".into()
-    };
     let disp = format!("attachment; filename*=UTF-8''{}.zip", utf8_percent_encode(&name, NON_ALPHANUMERIC));
     Ok((
         [(header::CONTENT_TYPE, "application/zip".to_string()), (header::CONTENT_LENGTH, len.to_string()), (header::CONTENT_DISPOSITION, disp)],

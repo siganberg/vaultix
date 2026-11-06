@@ -50,6 +50,33 @@ pub fn open(path: &Path) -> Result<Connection> {
             hash TEXT NOT NULL,
             PRIMARY KEY (user_id, path)
         );
+        CREATE TABLE IF NOT EXISTS shares (
+            id INTEGER PRIMARY KEY,
+            token TEXT UNIQUE NOT NULL,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            path TEXT NOT NULL,
+            kind TEXT NOT NULL,              -- 'link' (view/download) | 'upload' (file request)
+            password_hash TEXT,
+            expires_at INTEGER,
+            allow_download INTEGER NOT NULL DEFAULT 1,
+            max_size INTEGER,
+            note TEXT,
+            views INTEGER NOT NULL DEFAULT 0,
+            uploads INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS share_uploads (
+            id INTEGER PRIMARY KEY,
+            share_id INTEGER NOT NULL REFERENCES shares(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            size INTEGER NOT NULL,
+            uploader TEXT,
+            at INTEGER NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
         CREATE TABLE IF NOT EXISTS trash (
             id INTEGER PRIMARY KEY,
             user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
