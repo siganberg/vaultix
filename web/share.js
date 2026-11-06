@@ -89,7 +89,9 @@ let INFO = null;
 function frame(...content) {
   const top = h('header', { class: 'sp-top' },
     h('a', { class: 'brand', href: '/', title: 'Vaultix' }, h('img', { src: '/icon.svg', alt: '' }), 'Vaultix'),
-    INFO && INFO.owner ? h('div', { class: 'sp-by' }, h('div', { class: 'avatar' }, INFO.owner[0]), h('span', {}, 'Shared by ', h('b', {}, INFO.owner))) : '');
+    h('div', { class: 'sp-right' },
+      INFO && INFO.owner ? h('div', { class: 'sp-by' }, h('div', { class: 'avatar' }, INFO.owner[0]), h('span', {}, 'Shared by ', h('b', {}, INFO.owner))) : '',
+      VXTheme.button()));
   root.replaceChildren(top, h('main', { class: 'sp-main' }, ...content), h('footer', { class: 'sp-foot' }, 'Shared securely with Vaultix'));
 }
 

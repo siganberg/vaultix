@@ -55,6 +55,7 @@ const P = {
   link: '<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>',
   user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
   menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   open: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
 };
 const icon = (n, cls = '') => {
@@ -283,7 +284,7 @@ function showLogin() {
     } finally { btn.disabled = false; }
   }
   code.addEventListener('input', () => { if (!recovery && /^\d{6}$/.test(code.value)) submit(); });
-  root.replaceChildren(h('div', { class: 'login-wrap' }, h('form', { class: 'login', onsubmit: submit },
+  root.replaceChildren(h('div', { class: 'login-wrap' }, VXTheme.button('btn ghost icon login-theme'), h('form', { class: 'login', onsubmit: submit },
     h('div', { class: 'brand' }, h('img', { src: '/icon.svg', alt: '' }), 'Vaultix'), title, sub, step1, step2, err, btn)), toastsEl);
   user.focus();
 }
@@ -304,7 +305,7 @@ function renderShell() {
     h('div', { class: 'grow' }),
     usage,
     h('div', { class: 'me' }, h('div', { class: 'avatar' }, S.me.username[0]), h('div', { class: 'name' }, S.me.username),
-      h('button', { class: 'btn ghost icon', title: 'Sign out', onclick: logout }, icon('logout'))));
+      VXTheme.button(), h('button', { class: 'btn ghost icon', title: 'Sign out', onclick: logout }, icon('logout'))));
   root.replaceChildren(h('div', { class: 'app' }, side, h('main', { class: 'main', id: 'main' })), toastsEl);
   loadUsage();
 }
@@ -949,8 +950,20 @@ function settingsView() {
   const wrap = h('div', { class: 'settings' });
   const content = h('div', { class: 'content' }, wrap);
   const toolbar = h('div', { class: 'toolbar' }, h('div', { class: 'title' }, 'Settings'));
-  const cards = { account: h('div', { class: 'card' }), tfa: h('div', { class: 'card' }), connect: h('div', { class: 'card' }), devices: h('div', { class: 'card' }), sessions: h('div', { class: 'card' }) };
-  wrap.append(cards.account, cards.tfa, cards.connect, cards.devices, cards.sessions);
+  const cards = { account: h('div', { class: 'card' }), appearance: h('div', { class: 'card' }), tfa: h('div', { class: 'card' }), connect: h('div', { class: 'card' }), devices: h('div', { class: 'card' }), sessions: h('div', { class: 'card' }) };
+  wrap.append(cards.account, cards.appearance, cards.tfa, cards.connect, cards.devices, cards.sessions);
+
+  // Appearance
+  {
+    const opts = [['auto', 'System'], ['light', 'Light'], ['dark', 'Dark']];
+    const seg = h('div', { class: 'seg seg-text' });
+    const paint = () => seg.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.v === VXTheme.pref()));
+    opts.forEach(([v, label]) => seg.append(h('button', { type: 'button', 'data-v': v, onclick: () => VXTheme.set(v) }, label)));
+    paint();
+    window.addEventListener('vx-theme', paint);
+    cards.appearance.append(h('h3', {}, icon('sun'), 'Appearance'),
+      h('p', {}, 'System follows your device’s light/dark setting. The sun/moon button in the sidebar switches quickly. Saved in this browser.'), seg);
+  }
 
   // Account / password
   {

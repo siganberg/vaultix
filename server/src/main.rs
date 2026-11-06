@@ -57,6 +57,7 @@ const APP_CSS: &str = include_str!("../../web/app.css");
 const ICON: &str = include_str!("../../web/icon.svg");
 const SHARE_HTML: &str = include_str!("../../web/share.html");
 const SHARE_JS: &str = include_str!("../../web/share.js");
+const THEME_JS: &str = include_str!("../../web/theme.js");
 
 fn asset(ct: &'static str, body: &'static str, cache: &'static str) -> Response {
     ([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, cache)], body).into_response()
@@ -67,6 +68,7 @@ async fn static_fallback(uri: Uri) -> Response {
         "/app.js" => asset("text/javascript; charset=utf-8", APP_JS, "no-cache"),
         "/app.css" => asset("text/css; charset=utf-8", APP_CSS, "no-cache"),
         "/icon.svg" => asset("image/svg+xml", ICON, "public, max-age=86400"),
+        "/theme.js" => asset("text/javascript; charset=utf-8", THEME_JS, "no-cache"),
         "/share.js" => asset("text/javascript; charset=utf-8", SHARE_JS, "no-cache"),
         p if p.starts_with("/s/") => {
             let mut r = asset("text/html; charset=utf-8", SHARE_HTML, "no-cache");
