@@ -136,6 +136,23 @@ pub fn is_local_network_block(e: &anyhow::Error) -> bool {
 }
 
 pub fn login(server: &str, user: &str, pass: &str, code: Option<&str>) -> Result<LoginResult> {
+    // An app password (created in the web app) is already a token: just verify it.
+    if pass.starts_with("vx_") {
+        let res = http()
+            .get(format!("{}/api/me", server.trim_end_matches('/')))
+            .bearer_auth(pass)
+            .timeout(Duration::from_secs(30))
+            .send()
+            .with_context(|| format!("Can't reach {server}"))?;
+        if !res.status().is_success() {
+            bail!("That app password isn't valid (it may have been revoked)");
+        }
+        let v: serde_json::Value = res.json().unwrap_or_default();
+        if v["username"].as_str().is_some_and(|u| !u.eq_ignore_ascii_case(user)) {
+            bail!("That app password belongs to a different user");
+        }
+        return Ok(LoginResult::Token(pass.to_string()));
+    }
     let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "Mac".into());
     let res = http()
         .post(format!("{}/api/auth/token", server.trim_end_matches('/')))

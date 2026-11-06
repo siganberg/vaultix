@@ -49,40 +49,140 @@ fn choose_folder(prompt: &str) -> Option<PathBuf> {
     osa(&["on run argv", "activate", "POSIX path of (choose folder with prompt (item 1 of argv))", "end run"], &[prompt]).map(PathBuf::from)
 }
 
+/// One native sign-in window (NSAlert with an accessory view), driven through JXA so
+/// we need no extra UI toolkit. Returns None when cancelled.
+const SIGNIN_JS: &str = r#"
+ObjC.import('Cocoa');
+function run(argv) {
+  const [server, user, folder, message, iconPath, dry] = argv;
+  const app = $.NSApplication.sharedApplication;
+  app.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+  app.activateIgnoringOtherApps(true);
+
+  const a = $.NSAlert.alloc.init;
+  a.messageText = 'Sign in to Vaultix';
+  a.informativeText = message;
+  a.addButtonWithTitle('Sign In');
+  a.addButtonWithTitle('Cancel');
+  if (iconPath && $.NSFileManager.defaultManager.fileExistsAtPath(iconPath)) {
+    a.icon = $.NSImage.alloc.initWithContentsOfFile(iconPath);
+  }
+
+  const rows = [
+    ['Server address', server, 'https://vaultix.example.com', false],
+    ['Username', user, '', false],
+    ['Password  (or an app password)', '', '', true],
+    ['Server folder to sync  (/ = everything)', folder, '/', false],
+  ];
+  const W = 300, LH = 17, FH = 24, ROW = LH + FH + 12;
+  const view = $.NSView.alloc.initWithFrame($.NSMakeRect(0, 0, W, rows.length * ROW));
+  const fields = rows.map(([label, value, placeholder, secure], i) => {
+    const top = rows.length * ROW - i * ROW;
+    const l = $.NSTextField.labelWithString(label);
+    l.font = $.NSFont.systemFontOfSizeWeight(12, $.NSFontWeightMedium);
+    l.frame = $.NSMakeRect(0, top - LH, W, LH);
+    view.addSubview(l);
+    const f = (secure ? $.NSSecureTextField : $.NSTextField).alloc.initWithFrame($.NSMakeRect(0, top - LH - 3 - FH, W, FH));
+    f.stringValue = value;
+    f.placeholderString = placeholder;
+    f.bezelStyle = $.NSTextFieldRoundedBezel;
+    view.addSubview(f);
+    return f;
+  });
+  for (let i = 0; i < fields.length; i++) fields[i].nextKeyView = fields[(i + 1) % fields.length];
+  a.accessoryView = view;
+  a.layout;
+  a.window.level = $.NSFloatingWindowLevel;
+  const firstEmpty = fields.find((f, i) => i < 3 && f.stringValue.js === '') || fields[2];
+  a.window.initialFirstResponder = firstEmpty;
+  if (dry === '--dry') return JSON.stringify({ fields: fields.length, width: a.window.frame.size.width });
+  if (a.runModal !== $.NSAlertFirstButtonReturn) return '';
+  return JSON.stringify(fields.map(f => f.stringValue.js));
+}
+"#;
+
+struct SignIn {
+    server: String,
+    user: String,
+    pass: String,
+    folder: String,
+}
+
+fn signin_form(server: &str, user: &str, folder: &str, message: &str) -> Option<SignIn> {
+    let icon = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.parent()?.join("Resources/Vaultix.icns")))
+        .unwrap_or_default();
+    let out = Command::new("osascript")
+        .args(["-l", "JavaScript", "-e", SIGNIN_JS])
+        .args([server, user, folder, message, &icon.to_string_lossy()])
+        .output()
+        .ok()?;
+    let v: Vec<String> = serde_json::from_slice(out.stdout.trim_ascii()).ok()?;
+    let [server, user, pass, folder]: [String; 4] = v.try_into().ok()?;
+    Some(SignIn { server, user, pass, folder })
+}
+
+/// Turn transport errors into one readable sentence.
+fn friendly(e: &anyhow::Error, server: &str) -> String {
+    if e.chain().any(|c| c.downcast_ref::<reqwest::Error>().is_some_and(|r| r.is_connect() || r.is_timeout())) {
+        return format!("⚠︎ Can't reach {server}. Check the address and your connection.");
+    }
+    format!("⚠︎ {}", e.root_cause())
+}
+
 pub fn setup(prev: Option<&Config>) -> Option<Config> {
-    let mut server = prev.map(|c| c.server.clone()).unwrap_or_else(|| "https://".into());
+    let mut server = prev.map(|c| c.server.clone()).unwrap_or_default();
     let mut user = prev.map(|c| c.username.clone()).unwrap_or_default();
+    let mut folder = prev.map(|c| format!("/{}", c.remote_dir)).unwrap_or_else(|| "/".into());
+    let mut msg = "Enter your Vaultix server and account.".to_string();
     loop {
-        server = ask("Welcome to Vaultix!\n\nEnter your server address:", &server, false)?.trim().trim_end_matches('/').to_string();
-        if !server.starts_with("http://") && !server.starts_with("https://") {
+        let f = signin_form(&server, &user, &folder, &msg)?;
+        server = f.server.trim().trim_end_matches('/').to_string();
+        if !server.is_empty() && !server.starts_with("http://") && !server.starts_with("https://") {
             server = format!("https://{server}");
         }
-        user = ask("Username:", &user, false)?.trim().to_lowercase();
-        let pass = ask(&format!("Password for {user}:"), "", true)?;
-        let token = match login(&server, &user, &pass, None) {
+        user = f.user.trim().to_lowercase();
+        folder = if f.folder.trim().is_empty() { "/".into() } else { f.folder.trim().to_string() };
+        if server.is_empty() || user.is_empty() || f.pass.is_empty() {
+            msg = "⚠︎ Please fill in server, username and password.".into();
+            continue;
+        }
+
+        let token = match login(&server, &user, &f.pass, None) {
             Ok(LoginResult::Token(t)) => t,
             Ok(LoginResult::NeedCode) => {
-                let code = ask("Enter the 6-digit code from your authenticator app\n(or a recovery code):", "", false)?;
-                match login(&server, &user, &pass, Some(code.trim())) {
-                    Ok(LoginResult::Token(t)) => t,
-                    Ok(LoginResult::NeedCode) => {
-                        alert("Couldn't sign in", "Invalid 2FA code.");
-                        continue;
+                let mut prompt = "Enter the 6-digit code from your authenticator app (or a recovery code):".to_string();
+                let mut token = None;
+                while let Some(code) = ask(&prompt, "", false) {
+                    match login(&server, &user, &f.pass, Some(code.trim())) {
+                        Ok(LoginResult::Token(t)) => {
+                            token = Some(t);
+                            break;
+                        }
+                        Err(e) if format!("{e}").contains("2FA") || format!("{e}").contains("recovery") => {
+                            prompt = "That code didn't work. Enter a new code from your authenticator app:".into();
+                        }
+                        Err(e) => {
+                            msg = friendly(&e, &server);
+                            break;
+                        }
+                        Ok(LoginResult::NeedCode) => {}
                     }
-                    Err(e) => {
-                        alert("Couldn't sign in", &format!("{e:#}"));
-                        continue;
-                    }
+                }
+                match token {
+                    Some(t) => t,
+                    None => continue, // cancelled or other error: back to the form
                 }
             }
             Err(e) => {
-                alert("Couldn't sign in", &format!("{e:#}"));
+                msg = friendly(&e, &server);
                 continue;
             }
         };
 
         let default_dir = dirs::home_dir().unwrap_or_default().join("Vaultix");
-        let local = match buttons("Where should Vaultix keep your files on this Mac?", "Choose Other…", "Use ~/Vaultix")?.as_str() {
+        let local = match buttons("Signed in! Where should Vaultix keep your files on this Mac?", "Choose Other…", "Use ~/Vaultix")?.as_str() {
             "Use ~/Vaultix" => {
                 let _ = std::fs::create_dir_all(&default_dir);
                 default_dir
@@ -90,8 +190,7 @@ pub fn setup(prev: Option<&Config>) -> Option<Config> {
             _ => choose_folder("Choose the folder to sync with Vaultix")?,
         };
         let local = local.canonicalize().unwrap_or(local);
-        let remote = ask("Which server folder should be synced?\nUse “/” for your whole drive.", "/", false)?;
-        let remote = remote.trim().trim_matches('/').to_string();
+        let remote = folder.trim_matches('/').to_string();
         return Some(Config { server, username: user, token, local_dir: local, remote_dir: remote, paused: false });
     }
 }
