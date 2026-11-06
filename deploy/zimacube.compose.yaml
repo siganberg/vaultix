@@ -1,0 +1,26 @@
+# Arcane project: /DATA/PoolDrive/FastDrive/Services/arcane/data/projects/vaultix/compose.yaml
+# Image is built on the Mac (./scripts/deploy-zimacube.sh) and loaded into the ZimaCube's Docker.
+services:
+  vaultix:
+    image: vaultix:latest
+    pull_policy: never
+    container_name: vaultix
+    restart: unless-stopped
+    user: "1000:1000"
+    environment:
+      TZ: Etc/UTC
+      VAULTIX_COOKIE_SECURE: auto
+      VAULTIX_TRASH_DAYS: "30"
+    ports:
+      - "8085:8080"
+    volumes:
+      - /DATA/PoolDrive/FastDrive/Services/vaultix:/data
+    networks:
+      - default
+      - caddy_default
+
+networks:
+  default:
+    name: vaultix_default
+  caddy_default:
+    external: true
