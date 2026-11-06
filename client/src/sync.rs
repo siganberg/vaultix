@@ -204,7 +204,19 @@ pub struct Engine {
     pub cfg: Config,
     http: reqwest::blocking::Client,
     base: BTreeMap<String, Meta>,
-    pub progress: Box<dyn Fn(String) + Send>,
+    pub progress: Box<dyn Fn(String) + Send + Sync>,
+}
+
+/// Uploads/downloads run on this many threads at once.
+const PARALLEL: usize = 6;
+
+/// Everything a transfer needs, without the sync state, so workers can share it.
+struct Ctx<'a> {
+    http: &'a reqwest::blocking::Client,
+    cfg: &'a Config,
+    events: &'a Option<Sink>,
+    progress: &'a (dyn Fn(String) + Send + Sync),
+    total: usize,
 }
 
 struct LocalEntry {
@@ -235,43 +247,24 @@ impl Engine {
         self.emit(json!({ "event": "progress", "op": what, "path": k, "index": self.cur.0, "total": self.cur.1, "bytes": 0, "size": 0 }));
     }
 
-    fn progress_cb(&self, op: &'static str, k: &str) -> Box<dyn FnMut(u64, u64) + Send> {
-        let sink = self.events.clone();
-        let (k, (i, n)) = (k.to_string(), self.cur);
-        Box::new(move |done, total| {
-            if let Some(s) = &sink {
-                s(json!({ "event": "progress", "op": op, "path": k, "index": i, "total": n, "bytes": done, "size": total }));
-            }
-        })
+    fn ctx(&self) -> Ctx<'_> {
+        Ctx { http: &self.http, cfg: &self.cfg, events: &self.events, progress: &*self.progress, total: self.cur.1 }
     }
 
     fn url(&self, p: &str) -> String {
-        format!("{}{}", self.cfg.server.trim_end_matches('/'), p)
+        self.ctx().url(p)
     }
 
     fn remote_path(&self, rel: &str) -> String {
-        let r = self.cfg.remote_dir.trim_matches('/');
-        if r.is_empty() { rel.to_string() } else { format!("{r}/{rel}") }
+        self.ctx().remote_path(rel)
     }
 
     fn check(&self, res: reqwest::blocking::Response) -> Result<reqwest::blocking::Response> {
-        let st = res.status();
-        if st.is_success() {
-            return Ok(res);
-        }
-        let msg = res.json::<serde_json::Value>().ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or_else(|| st.to_string());
-        if st == reqwest::StatusCode::UNAUTHORIZED {
-            bail!("AUTH: {msg}");
-        }
-        bail!("{msg}")
+        self.ctx().check(res)
     }
 
     fn save_state(&self) {
-        let p = self.cfg.state_file();
-        let tmp = p.with_extension("tmp");
-        if std::fs::write(&tmp, serde_json::to_vec(&self.base).unwrap_or_default()).is_ok() {
-            let _ = std::fs::rename(tmp, p);
-        }
+        save_base(&self.cfg, &self.base);
     }
 
     pub fn version(&self) -> Result<u64> {
@@ -445,37 +438,72 @@ impl Engine {
                 log(&format!("error {k}: {e:#}"));
             }
         }
-        for (k, a) in acts.iter() {
-            let res = match a {
-                Act::Upload => {
-                    self.step("Uploading", k);
-                    let r = self.upload(k, &local[k]);
-                    if r.is_ok() {
-                        sum.uploaded += 1;
-                        sum.expected_gen += 1;
+        // Transfers in parallel; results are applied here as they arrive.
+        {
+            let jobs: Vec<(&String, bool)> = acts.iter().filter(|(_, a)| matches!(a, Act::Upload | Act::Download)).map(|(k, a)| (k, *a == Act::Upload)).collect();
+            let queue = std::sync::Mutex::new(jobs.into_iter());
+            let started = std::sync::atomic::AtomicUsize::new(self.cur.0);
+            let abort = std::sync::atomic::AtomicBool::new(false);
+            let ctx = Ctx { http: &self.http, cfg: &self.cfg, events: &self.events, progress: &*self.progress, total: work };
+            let base = &mut self.base;
+            let (local, remote) = (&local, &remote);
+            let mut auth_err = None;
+            let mut finished = 0usize;
+            std::thread::scope(|sc| {
+                let (tx, rx) = std::sync::mpsc::channel::<(String, bool, Result<Option<Meta>>)>();
+                for _ in 0..PARALLEL {
+                    let (tx, ctx, queue, started, abort) = (tx.clone(), &ctx, &queue, &started, &abort);
+                    sc.spawn(move || loop {
+                        if abort.load(std::sync::atomic::Ordering::Relaxed) {
+                            break;
+                        }
+                        let Some((k, up)) = queue.lock().unwrap().next() else { break };
+                        let idx = started.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        let res = if up {
+                            ctx.announce("Uploading", k, idx);
+                            ctx.upload(k, &local[k], idx)
+                        } else {
+                            ctx.announce("Downloading", k, idx);
+                            ctx.download(k, &remote[k], idx).map(Some)
+                        };
+                        if res.as_ref().is_err_and(|e| e.to_string().starts_with("AUTH:")) {
+                            abort.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
+                        if tx.send((k.clone(), up, res)).is_err() {
+                            break;
+                        }
+                    });
+                }
+                drop(tx);
+                for (k, up, res) in rx {
+                    match res {
+                        Ok(meta) => {
+                            if up {
+                                sum.uploaded += 1;
+                                sum.expected_gen += 1; // server accepted the upload
+                            } else {
+                                sum.downloaded += 1;
+                            }
+                            if let Some(m) = meta {
+                                base.insert(k, m);
+                            }
+                            finished += 1;
+                            if finished % 50 == 0 {
+                                save_base(ctx.cfg, base);
+                            }
+                        }
+                        Err(e) if e.to_string().starts_with("AUTH:") => auth_err = Some(e),
+                        Err(e) => {
+                            sum.errors += 1;
+                            log(&format!("error {k}: {e:#}"));
+                        }
                     }
-                    r
                 }
-                Act::Download => {
-                    self.step("Downloading", k);
-                    let r = self.download(k, &remote[k]);
-                    if r.is_ok() {
-                        sum.downloaded += 1;
-                    }
-                    r
-                }
-                _ => Ok(()),
-            };
-            if let Err(e) = res {
-                if e.to_string().starts_with("AUTH:") {
-                    self.save_state();
-                    return Err(e);
-                }
-                sum.errors += 1;
-                log(&format!("error {k}: {e:#}"));
-            }
-            if (sum.uploaded + sum.downloaded) % 50 == 49 {
+            });
+            self.cur.0 = started.into_inner();
+            if let Some(e) = auth_err {
                 self.save_state();
+                return Err(e);
             }
         }
         // Remote deletes in one batch.
@@ -532,7 +560,106 @@ impl Engine {
         Ok(())
     }
 
-    fn upload(&mut self, k: &str, l: &LocalEntry) -> Result<()> {
+    /// Keep both: rename the local copy, then take the server version.
+    fn conflict(&mut self, k: &str, l: &LocalEntry, r: &Meta) -> Result<()> {
+        let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "Mac".into());
+        let host = host.split('.').next().unwrap_or("Mac");
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H%M");
+        let p = &l.path;
+        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let (stem, ext) = if l.meta.is_dir { (p.file_name().unwrap().to_string_lossy().into_owned(), String::new()) } else { (stem, ext) };
+        let newp = p.with_file_name(format!("{stem} (conflict {host} {stamp}){ext}"));
+        std::fs::rename(p, &newp)?;
+        log(&format!("conflict on {k}: kept local copy as {}", newp.display()));
+        let kept = Path::new(k).with_file_name(newp.file_name().unwrap_or_default()).to_string_lossy().into_owned();
+        self.emit(json!({ "event": "activity", "op": "conflict", "path": kept, "original": k, "is_dir": l.meta.is_dir, "at": now_ms() }));
+        self.base.remove(k);
+        if r.is_dir {
+            std::fs::create_dir_all(p)?;
+            self.base.insert(k.to_string(), Meta::dir());
+            Ok(())
+        } else {
+            let m = self.ctx().download(k, r, self.cur.0)?;
+            self.base.insert(k.to_string(), m);
+            Ok(())
+        }
+    }
+}
+
+fn dir_only_junk(p: &Path) -> bool {
+    walkdir::WalkDir::new(p).min_depth(1).into_iter().filter_map(|e| e.ok()).all(|e| e.file_type().is_dir() || ignored(e.file_name()))
+}
+
+fn move_to_trash(p: &Path) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut ctx = trash::TrashContext::default();
+        // NSFileManager: no Finder automation prompt, no Finder sound.
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+        ctx.delete(p).map_err(|e| anyhow!("{e}"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        trash::delete(p).map_err(|e| anyhow!("{e}"))
+    }
+}
+
+fn save_base(cfg: &Config, base: &BTreeMap<String, Meta>) {
+    let p = cfg.state_file();
+    let tmp = p.with_extension("tmp");
+    if std::fs::write(&tmp, serde_json::to_vec(base).unwrap_or_default()).is_ok() {
+        let _ = std::fs::rename(tmp, p);
+    }
+}
+
+impl Ctx<'_> {
+    fn url(&self, p: &str) -> String {
+        format!("{}{}", self.cfg.server.trim_end_matches('/'), p)
+    }
+
+    fn remote_path(&self, rel: &str) -> String {
+        let r = self.cfg.remote_dir.trim_matches('/');
+        if r.is_empty() { rel.to_string() } else { format!("{r}/{rel}") }
+    }
+
+    fn check(&self, res: reqwest::blocking::Response) -> Result<reqwest::blocking::Response> {
+        let st = res.status();
+        if st.is_success() {
+            return Ok(res);
+        }
+        let msg = res.json::<serde_json::Value>().ok().and_then(|v| v["error"].as_str().map(String::from)).unwrap_or_else(|| st.to_string());
+        if st == reqwest::StatusCode::UNAUTHORIZED {
+            bail!("AUTH: {msg}");
+        }
+        bail!("{msg}")
+    }
+
+    fn emit(&self, v: serde_json::Value) {
+        if let Some(s) = self.events {
+            s(v);
+        }
+    }
+
+    fn announce(&self, what: &str, k: &str, idx: usize) {
+        let name = Path::new(k).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        (self.progress)(format!("{what} {name} ({idx}/{})", self.total));
+        self.emit(json!({ "event": "progress", "op": what, "path": k, "index": idx, "total": self.total, "bytes": 0, "size": 0 }));
+    }
+
+    fn progress_cb(&self, op: &'static str, k: &str, idx: usize) -> Box<dyn FnMut(u64, u64) + Send> {
+        let sink = self.events.clone();
+        let (k, n) = (k.to_string(), self.total);
+        Box::new(move |done, total| {
+            if let Some(s) = &sink {
+                s(json!({ "event": "progress", "op": op, "path": k, "index": idx, "total": n, "bytes": done, "size": total }));
+            }
+        })
+    }
+
+    /// Returns the meta to record, or None if the file changed while uploading (retried next pass).
+    fn upload(&self, k: &str, l: &LocalEntry, idx: usize) -> Result<Option<Meta>> {
         let f = std::fs::File::open(&l.path)?;
         let size = f.metadata()?.len();
         let r = self.check(
@@ -541,23 +668,23 @@ impl Engine {
                 .query(&[("path", self.remote_path(k)), ("mtime", l.meta.mtime.to_string())])
                 .bearer_auth(&self.cfg.token)
                 .body(reqwest::blocking::Body::sized(
-                    ProgressReader { inner: f, done: 0, total: size, last: std::time::Instant::now(), report: self.progress_cb("Uploading", k) },
+                    ProgressReader { inner: f, done: 0, total: size, last: std::time::Instant::now(), report: self.progress_cb("Uploading", k, idx) },
                     size,
                 ))
                 .send()?,
         )?;
         let v: serde_json::Value = r.json()?;
         if v["hash"].as_str() == Some(l.meta.hash.as_str()) {
-            self.base.insert(k.to_string(), l.meta.clone());
             log(&format!("uploaded {k}"));
-            self.activity("uploaded", k, false);
+            self.emit(json!({ "event": "activity", "op": "uploaded", "path": k, "is_dir": false, "at": now_ms() }));
+            Ok(Some(l.meta.clone()))
         } else {
             log(&format!("{k} changed while uploading; will retry"));
+            Ok(None)
         }
-        Ok(())
     }
 
-    fn download(&mut self, k: &str, r: &Meta) -> Result<()> {
+    fn download(&self, k: &str, r: &Meta, idx: usize) -> Result<Meta> {
         let dest = self.cfg.local_dir.join(k);
         if let Some(p) = dest.parent() {
             std::fs::create_dir_all(p)?;
@@ -565,7 +692,7 @@ impl Engine {
         let tmp = dest.with_file_name(format!(".vaultix-part-{}", unique_suffix()));
         let res = (|| -> Result<String> {
             let mut resp = self.check(self.http.get(self.url("/api/file")).query(&[("path", self.remote_path(k))]).bearer_auth(&self.cfg.token).send()?)?;
-            let mut report = self.progress_cb("Downloading", k);
+            let mut report = self.progress_cb("Downloading", k, idx);
             let (mut got, mut last) = (0u64, std::time::Instant::now());
             let mut f = std::io::BufWriter::with_capacity(1 << 20, std::fs::File::create(&tmp)?);
             let mut h = blake3::Hasher::new();
@@ -601,52 +728,8 @@ impl Engine {
         filetime::set_file_mtime(&tmp, ft)?;
         std::fs::rename(&tmp, &dest)?;
         let md = std::fs::metadata(&dest)?;
-        self.base.insert(k.to_string(), Meta { is_dir: false, size: md.len(), mtime: mtime_ms(&md), hash });
         log(&format!("downloaded {k}"));
-        self.activity("downloaded", k, false);
-        Ok(())
-    }
-
-    /// Keep both: rename the local copy, then take the server version.
-    fn conflict(&mut self, k: &str, l: &LocalEntry, r: &Meta) -> Result<()> {
-        let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "Mac".into());
-        let host = host.split('.').next().unwrap_or("Mac");
-        let stamp = chrono::Local::now().format("%Y-%m-%d %H%M");
-        let p = &l.path;
-        let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let ext = p.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-        let (stem, ext) = if l.meta.is_dir { (p.file_name().unwrap().to_string_lossy().into_owned(), String::new()) } else { (stem, ext) };
-        let newp = p.with_file_name(format!("{stem} (conflict {host} {stamp}){ext}"));
-        std::fs::rename(p, &newp)?;
-        log(&format!("conflict on {k}: kept local copy as {}", newp.display()));
-        let kept = Path::new(k).with_file_name(newp.file_name().unwrap_or_default()).to_string_lossy().into_owned();
-        self.emit(json!({ "event": "activity", "op": "conflict", "path": kept, "original": k, "is_dir": l.meta.is_dir, "at": now_ms() }));
-        self.base.remove(k);
-        if r.is_dir {
-            std::fs::create_dir_all(p)?;
-            self.base.insert(k.to_string(), Meta::dir());
-            Ok(())
-        } else {
-            self.download(k, r)
-        }
-    }
-}
-
-fn dir_only_junk(p: &Path) -> bool {
-    walkdir::WalkDir::new(p).min_depth(1).into_iter().filter_map(|e| e.ok()).all(|e| e.file_type().is_dir() || ignored(e.file_name()))
-}
-
-fn move_to_trash(p: &Path) -> Result<()> {
-    #[cfg(target_os = "macos")]
-    {
-        use trash::macos::{DeleteMethod, TrashContextExtMacos};
-        let mut ctx = trash::TrashContext::default();
-        // NSFileManager: no Finder automation prompt, no Finder sound.
-        ctx.set_delete_method(DeleteMethod::NsFileManager);
-        ctx.delete(p).map_err(|e| anyhow!("{e}"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        trash::delete(p).map_err(|e| anyhow!("{e}"))
+        self.emit(json!({ "event": "activity", "op": "downloaded", "path": k, "is_dir": false, "at": now_ms() }));
+        Ok(Meta { is_dir: false, size: md.len(), mtime: mtime_ms(&md), hash })
     }
 }
