@@ -171,9 +171,13 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Artifacts keep their folder layout; attach every file, flat.
+          mapfile -t FILES < <(find dist -type f \( -name '*.dmg' -o -name '*.exe' -o -name '*.deb' -o -name '*.AppImage' -o -name '*.tar.gz' \))
+          printf '%s\n' "${FILES[@]}"
+          [ "${#FILES[@]}" -ge 5 ] || { echo "expected at least 5 installers"; exit 1; }
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
-            gh release edit "$TAG" --notes-file notes.md
+            gh release upload "$TAG" "${FILES[@]}" --clobber
+            gh release edit "$TAG" --notes-file notes.md --title "Vaultix ${TAG#v}"
           else
-            gh release create "$TAG" dist/* --title "Vaultix ${TAG#v}" --notes-file notes.md --verify-tag
+            gh release create "$TAG" "${FILES[@]}" --title "Vaultix ${TAG#v}" --notes-file notes.md --verify-tag
           fi
