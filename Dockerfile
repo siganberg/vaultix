@@ -17,7 +17,7 @@ RUN set -eux; \
     echo "$T" > /target; echo "$CC" > /cc
 WORKDIR /src
 COPY . .
-RUN --mount=type=cache,target=/usr/local/cargo/registry \
+RUN --mount=type=cache,target=/usr/local/cargo/registry,sharing=locked \
     --mount=type=cache,target=/src/target,id=vaultix-target-${TARGETARCH} \
     set -eux; T=$(cat /target); CC=$(cat /cc); \
     TU=$(echo "$T" | tr 'a-z-' 'A-Z_'); \
