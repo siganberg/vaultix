@@ -1,4 +1,4 @@
-//! `vaultix-sync agent`: the sync engine as a headless helper for the macOS app.
+//! The sync agent: the engine behind a JSON command/event protocol (macOS helper + desktop app).
 //!
 //! Protocol: newline-delimited JSON.
 //!   stdin  (commands): {"cmd":"login","server":..,"username":..,"password":..,"code":..}
@@ -81,12 +81,28 @@ fn normalize_server(s: &str) -> String {
     if s.starts_with("http://") || s.starts_with("https://") { s.to_string() } else { format!("https://{s}") }
 }
 
+/// Headless helper for the macOS app: commands on stdin, events on stdout.
 pub fn run() -> anyhow::Result<()> {
     let out: Sink = Arc::new(|v: Value| {
         let mut o = std::io::stdout().lock();
         let _ = writeln!(o, "{v}");
         let _ = o.flush();
     });
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines() {
+            let Ok(line) = line else { break };
+            if tx.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    serve(rx, out)
+}
+
+/// The agent loop, driven by any command source (stdin for the Mac helper, a channel for the
+/// embedded desktop app). Returns when the source closes or a `quit` command arrives.
+pub fn serve(cmds: std::sync::mpsc::Receiver<String>, out: Sink) -> anyhow::Result<()> {
     std::fs::create_dir_all(config::dir())?;
     let lock = std::fs::File::create(config::dir().join("agent.lock"))?;
     if fs2::FileExt::try_lock_exclusive(&lock).is_err() {
@@ -126,8 +142,7 @@ pub fn run() -> anyhow::Result<()> {
         });
     }
 
-    for line in std::io::stdin().lock().lines() {
-        let Ok(line) = line else { break };
+    for line in cmds {
         if line.trim().is_empty() {
             continue;
         }
@@ -168,7 +183,7 @@ pub fn run() -> anyhow::Result<()> {
                             let bad_code = code.is_some() && format!("{e}").to_lowercase().contains("2fa");
                             out(json!({
                                 "event": "login_result", "ok": false,
-                                "error": if lan { "macOS is blocking Vaultix from your local network.".to_string() } else { friendly(&e, &server) },
+                                "error": if lan { "Your system is blocking Vaultix from the local network.".to_string() } else { friendly(&e, &server) },
                                 "local_network": lan,
                                 "need_code": bad_code,
                             }));

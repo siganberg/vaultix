@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Vaultix</title>
+<link rel="stylesheet" href="common.css">
+<style>
+  body { background: var(--panel); border: 1px solid var(--line); }
+  #app { height: 100%; display: flex; flex-direction: column; position: relative; }
+  .head { display: flex; align-items: center; gap: 11px; padding: 14px 12px 12px 14px; }
+  .head .who { flex: 1; min-width: 0; }
+  .head .who b { display: block; font-size: 14.5px; font-weight: 650; letter-spacing: -.01em; }
+  .status { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: 12px; white-space: nowrap; overflow: hidden; }
+  .status span { overflow: hidden; text-overflow: ellipsis; }
+  .status svg { width: 13px; height: 13px; }
+  .status.ok svg { color: var(--ok); stroke-width: 2.6; }
+  .status.sync svg { color: var(--accent); }
+  .status.bad svg { color: var(--danger); }
+  .status.paused svg { color: var(--muted); }
+
+  .menu { position: absolute; right: 10px; top: 50px; z-index: 5; min-width: 200px; padding: 5px; border-radius: 10px; background: var(--panel); border: 1px solid var(--line);
+    box-shadow: 0 12px 32px rgba(0, 0, 0, .18); }
+  .menu button { display: flex; width: 100%; align-items: center; gap: 9px; padding: 7px 9px; border: 0; background: none; border-radius: 6px; cursor: pointer; text-align: left; }
+  .menu button:hover { background: var(--accent); color: #fff; }
+  .menu hr { border: 0; border-top: 1px solid var(--line); margin: 4px 2px; }
+
+  .card { margin: 0 12px 4px; padding: 11px 12px; border-radius: 12px; background: var(--panel-2); }
+  .xfer { display: flex; align-items: center; gap: 10px; margin-bottom: 9px; }
+  .xfer .op { width: 26px; height: 26px; border-radius: 7px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); flex: none; }
+  .xfer .op svg { width: 14px; height: 14px; stroke-width: 2.6; }
+  .xfer .t { min-width: 0; flex: 1; }
+  .xfer b { display: block; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .xfer small { color: var(--muted); font-size: 11.5px; }
+  .bar { height: 5px; border-radius: 5px; background: var(--line); overflow: hidden; position: relative; }
+  .bar i { position: absolute; inset: 0 auto 0 0; border-radius: 5px; background: linear-gradient(90deg, #7c6cff, #3a8bff); transition: width .25s ease; }
+  .bar.indet i { width: 35% !important; animation: indet 1.2s ease-in-out infinite; }
+  @keyframes indet { from { left: -35%; } to { left: 100%; } }
+
+  .banner { margin: 0 12px 6px; padding: 9px 11px; border-radius: 10px; font-size: 12px; display: flex; gap: 8px; align-items: flex-start; background: rgba(229, 72, 77, .1); color: var(--danger); }
+  .banner.warn { background: rgba(224, 144, 10, .12); color: var(--warn); }
+
+  .sect { display: flex; align-items: center; padding: 12px 16px 6px; font-size: 11px; font-weight: 650; letter-spacing: .06em; color: var(--faint); }
+  .list { flex: 1; overflow-y: auto; padding: 0 6px 6px; }
+  .list::-webkit-scrollbar { width: 8px; } .list::-webkit-scrollbar-thumb { background: var(--line); border-radius: 8px; border: 2px solid var(--panel); }
+  .item { display: flex; align-items: center; gap: 11px; padding: 7px 10px; border-radius: 9px; cursor: pointer; }
+  .item:hover { background: var(--hover); }
+  .item .ic { position: relative; width: 32px; height: 32px; flex: none; }
+  .item .ic > svg.fti { width: 100%; height: 100%; }
+  .item.del .ic > svg.fti { opacity: .45; }
+  .item .badge { position: absolute; right: -3px; bottom: -3px; width: 15px; height: 15px; border-radius: 50%; display: grid; place-items: center; color: #fff; border: 2px solid var(--panel); box-sizing: content-box; }
+  .item .badge svg { width: 9px; height: 9px; stroke-width: 3.2; }
+  .badge.up { background: var(--accent); } .badge.down { background: var(--blue); } .badge.conflict { background: var(--warn); } .badge.del { background: var(--faint); }
+  .item .t { min-width: 0; flex: 1; }
+  .item b { display: block; font-weight: 550; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .item.del b { text-decoration: line-through; color: var(--muted); }
+  .item small { display: block; color: var(--muted); font-size: 11.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .empty { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; padding: 20px 34px; color: var(--muted); gap: 6px; }
+  .empty .big { width: 64px; height: 64px; border-radius: 18px; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); margin-bottom: 8px; }
+  .empty .big svg { width: 30px; height: 30px; stroke-width: 1.8; }
+  .empty b { color: var(--text); font-size: 14px; }
+  .empty .btn { margin-top: 12px; }
+
+  .foot { margin-top: auto; flex: none; display: flex; align-items: center; gap: 2px; padding: 8px 10px 9px; border-top: 1px solid var(--line); background: var(--panel); }
+  .foot .btn { height: 30px; padding: 0 10px; font-weight: 500; }
+  .foot .use { flex: 1; text-align: right; line-height: 1.3; }
+  .foot .use b { font-weight: 600; font-size: 12px; }
+  .foot .use small { display: block; color: var(--faint); font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script src="common.js"></script>
+<script src="fileicons.js"></script>
+<script src="popover.js"></script>
+</body>
+</html>

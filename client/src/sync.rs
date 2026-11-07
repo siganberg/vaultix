@@ -91,7 +91,24 @@ pub fn ignored(name: &OsStr) -> bool {
         || n.starts_with(".vaultix-part")
         || n.starts_with(".~lock.")
         || n.starts_with("~$")
-        || matches!(n.as_ref(), ".Trashes" | ".Spotlight-V100" | ".fseventsd" | ".TemporaryItems" | ".DocumentRevisions-V100" | "Thumbs.db" | "desktop.ini")
+        || matches!(n.as_ref(), ".Trashes" | ".Spotlight-V100" | ".fseventsd" | ".TemporaryItems" | ".DocumentRevisions-V100" | "Thumbs.db" | "desktop.ini" | "$RECYCLE.BIN" | "System Volume Information")
+        || n.starts_with(".Trash-")
+}
+
+/// Names Windows can't store (reserved device names, forbidden characters, trailing dot/space).
+/// Such server entries are skipped on Windows instead of failing the whole sync.
+pub fn unrepresentable(path: &str) -> bool {
+    cfg!(windows) && bad_windows_name(path)
+}
+
+fn bad_windows_name(path: &str) -> bool {
+    path.split('/').any(|c| {
+        let stem = c.split('.').next().unwrap_or("").to_ascii_uppercase();
+        c.chars().any(|ch| matches!(ch, '<' | '>' | ':' | '"' | '\\' | '|' | '?' | '*') || (ch as u32) < 32)
+            || c.ends_with('.')
+            || c.ends_with(' ')
+            || matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "COM1" | "COM2" | "COM3" | "COM4" | "COM5" | "COM6" | "COM7" | "COM8" | "COM9" | "LPT1" | "LPT2" | "LPT3" | "LPT4" | "LPT5" | "LPT6" | "LPT7" | "LPT8" | "LPT9")
+    })
 }
 
 fn mtime_ms(md: &std::fs::Metadata) -> i64 {
@@ -153,7 +170,7 @@ pub fn login(server: &str, user: &str, pass: &str, code: Option<&str>) -> Result
         }
         return Ok(LoginResult::Token(pass.to_string()));
     }
-    let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "Mac".into());
+    let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "computer".into());
     let res = http()
         .post(format!("{}/api/auth/token", server.trim_end_matches('/')))
         .timeout(Duration::from_secs(30))
@@ -286,6 +303,13 @@ impl Engine {
             .entries
             .into_iter()
             .filter(|e| !e.path.split('/').any(|c| ignored(OsStr::new(c))))
+            .filter(|e| {
+                let bad = unrepresentable(&e.path);
+                if bad {
+                    crate::config::log(&format!("skipped (name not allowed on this system): {}", e.path));
+                }
+                !bad
+            })
             .map(|e| (nfc(&e.path), Meta { is_dir: e.is_dir, size: e.size, mtime: e.mtime, hash: e.hash }))
             .collect();
         Ok((m.gen, map))
@@ -300,7 +324,7 @@ impl Engine {
             if e.file_type().is_symlink() {
                 continue;
             }
-            let rel = nfc(&e.path().strip_prefix(root)?.to_string_lossy());
+            let rel = nfc(&e.path().strip_prefix(root)?.to_string_lossy().replace('\\', "/"));
             let Ok(md) = e.metadata() else { continue };
             if md.is_dir() {
                 out.insert(rel, LocalEntry { meta: Meta::dir(), path: e.path().to_path_buf() });
@@ -562,8 +586,8 @@ impl Engine {
 
     /// Keep both: rename the local copy, then take the server version.
     fn conflict(&mut self, k: &str, l: &LocalEntry, r: &Meta) -> Result<()> {
-        let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "Mac".into());
-        let host = host.split('.').next().unwrap_or("Mac");
+        let host = hostname::get().map(|h| h.to_string_lossy().into_owned()).unwrap_or_else(|_| "computer".into());
+        let host = host.split('.').next().unwrap_or("computer");
         let stamp = chrono::Local::now().format("%Y-%m-%d %H%M");
         let p = &l.path;
         let stem = p.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
@@ -602,6 +626,7 @@ fn move_to_trash(p: &Path) -> Result<()> {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // Windows: Recycle Bin. Linux: the freedesktop trash (~/.local/share/Trash).
         trash::delete(p).map_err(|e| anyhow!("{e}"))
     }
 }
@@ -731,5 +756,30 @@ impl Ctx<'_> {
         log(&format!("downloaded {k}"));
         self.emit(json!({ "event": "activity", "op": "downloaded", "path": k, "is_dir": false, "at": now_ms() }));
         Ok(Meta { is_dir: false, size: md.len(), mtime: mtime_ms(&md), hash })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_names() {
+        for bad in ["a/b:c.txt", "CON", "dir/nul.txt", "COM1.log", "trailing.", "space ", "q?.md", "x/y*z", "tab\there"] {
+            assert!(bad_windows_name(bad), "{bad:?} should be rejected");
+        }
+        for ok in ["Report.pdf", "Projects/CNC/pocket.nc", "console.log", "con-artist.txt", "photo (1).jpg", ".hidden", "über.txt"] {
+            assert!(!bad_windows_name(ok), "{ok:?} should be allowed");
+        }
+    }
+
+    #[test]
+    fn junk_is_ignored() {
+        for j in [".DS_Store", "._x", "Thumbs.db", "desktop.ini", "~$report.docx", ".~lock.a.odt#", "$RECYCLE.BIN", ".Trash-1000", ".vaultix-part-1"] {
+            assert!(ignored(OsStr::new(j)), "{j} should be ignored");
+        }
+        for k in ["notes.md", "lock.txt", "Trash", "report.docx"] {
+            assert!(!ignored(OsStr::new(k)), "{k} should sync");
+        }
     }
 }

@@ -1,7 +1,4 @@
-mod agent;
-mod config;
-mod runner;
-mod sync;
+use vaultix_sync::{agent, config, runner, sync};
 
 use anyhow::{bail, Result};
 use config::Config;
