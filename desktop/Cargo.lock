@@ -4783,7 +4783,7 @@ dependencies = [
 
 [[package]]
 name = "vaultix-desktop"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "dirs 5.0.1",
@@ -4801,7 +4801,7 @@ dependencies = [
 
 [[package]]
 name = "vaultix-sync"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "anyhow",
  "blake3",
