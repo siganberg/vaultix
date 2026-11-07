@@ -9,8 +9,8 @@ enum Previews {
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         let m = AppModel.shared
         m.configured = true
-        m.username = "francis"
-        m.server = "https://vaultix.marasigan.net"
+        m.username = "alex"
+        m.server = "https://drive.example.com"
         m.localDir = NSHomeDirectory() + "/Vaultix"
         m.remoteDir = ""
         m.usage = Usage(used: 38_440_539_000, free: 567_722_000_384, total: 1_995_218_165_760)

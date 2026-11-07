@@ -1,20 +1,18 @@
-# Vaultix – self-hosted drive.
-# Data (database + everyone's files as plain files) lives in the mounted /data folder.
+# Vaultix: self-hosted drive.
+# Start:  docker compose up -d   →  open http://<this machine>:8085 and create your admin account.
+# Data (database + everyone's files, stored as plain files) lives in ./data.
 services:
   vaultix:
-    image: vaultix:latest
-    build: .
+    image: ghcr.io/siganberg/vaultix:latest
+    # build: .            # or build from this checkout instead of pulling
     container_name: vaultix
     restart: unless-stopped
     ports:
       - "8085:8080"
     environment:
       TZ: ${TZ:-UTC}
-      # Creates the first admin on the very first start only (ignored afterwards).
-      VAULTIX_ADMIN_USER: ${VAULTIX_ADMIN_USER:-admin}
-      VAULTIX_ADMIN_PASSWORD: ${VAULTIX_ADMIN_PASSWORD:?set VAULTIX_ADMIN_PASSWORD}
       # auto = mark cookies Secure when behind an HTTPS reverse proxy (X-Forwarded-Proto).
       VAULTIX_COOKIE_SECURE: auto
       VAULTIX_TRASH_DAYS: "30"
     volumes:
-      - /DATA/AppData/vaultix:/data
+      - ./data:/data
