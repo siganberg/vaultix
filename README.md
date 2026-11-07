@@ -209,4 +209,4 @@ The tag triggers `.github/workflows/release.yml`. It builds the multi-arch Docke
 
 ## License
 
-[MIT](LICENSE)
+[GNU GPL v3.0](LICENSE). You may use, modify and share Vaultix; if you distribute a modified version, it must also be released under the GPL v3 with its source code.

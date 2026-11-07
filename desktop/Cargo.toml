@@ -2,6 +2,8 @@
 name = "vaultix-desktop"
 version = "0.3.0"
 edition = "2021"
+license = "GPL-3.0-only"
+repository = "https://github.com/siganberg/vaultix"
 description = "Vaultix desktop sync for Windows and Linux"
 
 # Standalone (not part of the server workspace) so the server's Docker build never pulls in Tauri.
