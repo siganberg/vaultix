@@ -530,3 +530,5 @@ textarea.input { height: auto; padding: 10px 12px; resize: vertical; font: inher
 .sp-right { display: flex; align-items: center; gap: 14px; }
 html.theme-anim, html.theme-anim * { transition: background-color .2s ease, border-color .2s ease, color .2s ease !important; }
 .seg.seg-text button { width: auto; padding: 0 14px; font-size: 13px; font-weight: 500; }
+.app-dl { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+.card .items .it .avatar { margin-right: 2px; }

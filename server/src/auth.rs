@@ -250,6 +250,11 @@ pub fn is_https(headers: &HeaderMap, s: &S) -> bool {
 
 pub async fn login(State(s): State<S>, headers: HeaderMap, Json(req): Json<LoginReq>) -> R<Response> {
     let (uid, _) = verify_login(&s, &req).await?;
+    start_session(&s, &headers, uid)
+}
+
+/// Create a browser session for `uid` and return the response that sets its cookie.
+pub fn start_session(s: &S, headers: &HeaderMap, uid: i64) -> R<Response> {
     let token = random_hex(32);
     let t = now();
     let ua = headers.get(header::USER_AGENT).and_then(|v| v.to_str().ok()).unwrap_or("").chars().take(200).collect::<String>();
@@ -257,7 +262,7 @@ pub async fn login(State(s): State<S>, headers: HeaderMap, Json(req): Json<Login
         "INSERT INTO sessions (token_hash, user_id, created_at, last_seen, expires_at, user_agent) VALUES (?1, ?2, ?3, ?3, ?4, ?5)",
         params![sha256_hex(&token), uid, t, t + SESSION_TTL, ua],
     )?;
-    let secure = if is_https(&headers, &s) { "; Secure" } else { "" };
+    let secure = if is_https(headers, s) { "; Secure" } else { "" };
     let cookie = format!("{COOKIE}={token}; Path=/; HttpOnly; SameSite=Strict; Max-Age={SESSION_TTL}{secure}");
     Ok(([(header::SET_COOKIE, cookie)], Json(json!({ "ok": true }))).into_response())
 }

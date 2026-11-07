@@ -1,3 +1,4 @@
+mod admin;
 mod auth;
 mod db;
 mod files;
@@ -105,6 +106,10 @@ fn router(state: S) -> Router {
         .route("/api/auth/logout", post(logout))
         .route("/api/auth/password", post(change_password))
         .route("/api/me", get(me))
+        .route("/api/setup", get(admin::setup_status).post(admin::setup))
+        .route("/api/admin/users", get(admin::list_users).post(admin::create_user))
+        .route("/api/admin/users/update", post(admin::update_user))
+        .route("/api/admin/users/delete", post(admin::delete_user))
         .route("/api/2fa/setup", post(totp_setup))
         .route("/api/2fa/enable", post(totp_enable))
         .route("/api/2fa/disable", post(totp_disable))
@@ -152,7 +157,7 @@ fn router(state: S) -> Router {
     json_api.merge(file_api).merge(dav).layer(middleware::from_fn(security_headers)).with_state(state)
 }
 
-fn create_user(s: &AppState, username: &str, password: &str, admin: bool) -> anyhow::Result<()> {
+pub(crate) fn create_user(s: &AppState, username: &str, password: &str, admin: bool) -> anyhow::Result<()> {
     let username = username.trim().to_lowercase();
     anyhow::ensure!(valid_username(&username), "username may only contain a-z, 0-9, '.', '_' and '-'");
     anyhow::ensure!(password.len() >= 8, "password must be at least 8 characters");
@@ -284,7 +289,7 @@ async fn main() -> anyhow::Result<()> {
                 create_user(&state, &u, &p, true)?;
                 tracing::info!("created admin user '{u}'");
             }
-            _ => tracing::warn!("no users yet: set VAULTIX_ADMIN_USER and VAULTIX_ADMIN_PASSWORD, or run `vaultix-server user add <name> --admin`"),
+            _ => tracing::warn!("no users yet: open the web app to create the admin account"),
         }
     }
     // Clear interrupted uploads.

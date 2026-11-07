@@ -240,6 +240,37 @@ const refresh = () => (S.query ? doSearch(S.query) : loadFiles());
 
 const root = $('#root');
 
+// First run: no accounts exist yet, so the first visitor creates the admin account.
+function showSetup() {
+  S.me = null;
+  const user = h('input', { class: 'input', autocomplete: 'username', autocapitalize: 'none', spellcheck: 'false', value: 'admin' });
+  const pass = h('input', { class: 'input', type: 'password', autocomplete: 'new-password', placeholder: 'At least 8 characters' });
+  const pass2 = h('input', { class: 'input', type: 'password', autocomplete: 'new-password' });
+  const err = h('div', { class: 'err' });
+  const btn = h('button', { class: 'btn primary' }, 'Create account');
+  async function submit(e) {
+    e.preventDefault();
+    err.textContent = '';
+    if (pass.value.length < 8) { err.textContent = 'Use at least 8 characters for the password.'; return pass.focus(); }
+    if (pass.value !== pass2.value) { err.textContent = 'The passwords don’t match.'; return pass2.focus(); }
+    btn.disabled = true;
+    try {
+      await api('POST', '/api/setup', { username: user.value, password: pass.value });
+      S.welcome = true;
+      await boot();
+    } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
+  }
+  root.replaceChildren(h('div', { class: 'login-wrap' }, VXTheme.button('btn ghost icon login-theme'), h('form', { class: 'login', onsubmit: submit },
+    h('div', { class: 'brand' }, h('img', { src: '/icon.svg', alt: '' }), 'Vaultix'),
+    h('h1', {}, 'Welcome to Vaultix'),
+    h('p', { class: 'sub' }, 'Create the admin account for this server. You can add more people later in Settings → Users.'),
+    h('label', { class: 'field' }, h('span', {}, 'Username'), user),
+    h('label', { class: 'field' }, h('span', {}, 'Password'), pass),
+    h('label', { class: 'field' }, h('span', {}, 'Repeat password'), pass2),
+    err, btn)), toastsEl);
+  pass.focus();
+}
+
 function showLogin() {
   S.me = null;
   let need2fa = false, recovery = false;
@@ -920,7 +951,68 @@ function settingsView() {
   const content = h('div', { class: 'content' }, wrap);
   const toolbar = h('div', { class: 'toolbar' }, h('div', { class: 'title' }, 'Settings'));
   const cards = { account: h('div', { class: 'card' }), appearance: h('div', { class: 'card' }), tfa: h('div', { class: 'card' }), connect: h('div', { class: 'card' }), devices: h('div', { class: 'card' }), sessions: h('div', { class: 'card' }) };
-  wrap.append(cards.account, cards.appearance, cards.tfa, cards.connect, cards.devices, cards.sessions);
+  cards.users = h('div', { class: 'card' });
+  cards.apps = h('div', { class: 'card' });
+  wrap.append(cards.account, cards.appearance, cards.tfa, cards.apps, cards.connect, cards.devices, cards.sessions);
+  if (S.me.is_admin) wrap.insertBefore(cards.users, cards.apps);
+
+  // Desktop apps
+  cards.apps.append(h('h3', {}, icon('monitor'), 'Desktop apps'),
+    h('p', {}, 'Keep a folder on your computer in sync with Vaultix. Install the app, then sign in with this server’s address:'),
+    h('div', { class: 'kv' }, h('span', {}, 'Server'), h('div', { class: 'mono' }, location.origin), h('span', {}, 'Username'), h('div', { class: 'mono' }, S.me.username)),
+    h('div', { class: 'app-dl' },
+      h('a', { class: 'btn', href: RELEASES, target: '_blank', rel: 'noopener' }, 'macOS'),
+      h('a', { class: 'btn', href: RELEASES, target: '_blank', rel: 'noopener' }, 'Windows'),
+      h('a', { class: 'btn', href: RELEASES, target: '_blank', rel: 'noopener' }, 'Linux')));
+
+  // Users (admins)
+  async function loadUsers() {
+    let d;
+    try { d = await api('GET', '/api/admin/users'); } catch (e) { return fail(e); }
+    const act = async (body, msg) => { try { await api('POST', '/api/admin/users/update', body); toast(msg); loadUsers(); } catch (e) { fail(e); } };
+    cards.users.replaceChildren(h('h3', {}, icon('user'), 'Users'), h('p', {}, 'People who can sign in to this server. Each person gets their own private drive.'),
+      h('div', { class: 'items' }, d.users.map((u) => h('div', { class: 'it' },
+        h('div', { class: 'avatar' }, u.username[0]),
+        h('div', { class: 't' }, h('b', {}, u.username, u.is_admin ? h('span', { class: 'pill p-link', style: 'margin-left:8px' }, 'Admin') : '', u.totp_enabled ? h('span', { class: 'pill on', style: 'margin-left:6px' }, '2FA') : ''),
+          h('small', {}, `${u.devices} device${u.devices === 1 ? '' : 's'} · ${u.last_seen ? 'active ' + fmtDate(u.last_seen * 1000) : 'never signed in on the web'}`)),
+        u.username !== S.me.username && h('button', { class: 'btn ghost icon', title: 'Manage', onclick: (ev) => {
+          ev.stopPropagation();
+          openMenu(ev.clientX, ev.clientY, [
+            { icon: 'key', label: 'Reset password…', fn: async () => { const pw = await askPassword(`New password for ${u.username}`); if (pw) act({ username: u.username, password: pw }, 'Password reset. They were signed out of browsers.'); } },
+            u.totp_enabled && { icon: 'shield', label: 'Turn off 2FA', fn: () => act({ username: u.username, reset_2fa: true }, '2FA turned off for ' + u.username) },
+            { icon: 'user', label: u.is_admin ? 'Remove admin' : 'Make admin', fn: () => act({ username: u.username, is_admin: !u.is_admin }, 'Updated ' + u.username) },
+            '-',
+            { icon: 'trash', label: 'Delete user…', danger: true, fn: async () => {
+              const ok = await confirmBox(`Delete ${u.username}?`, 'They can no longer sign in. Their files stay on the server disk (data/users/' + u.username + ').', 'Delete');
+              if (ok) { try { await api('POST', '/api/admin/users/delete', { username: u.username }); toast('Deleted ' + u.username); loadUsers(); } catch (e) { fail(e); } }
+            } },
+          ]);
+        } }, icon('more'))))),
+      h('button', { class: 'btn', onclick: addUser }, icon('plus'), 'Add user'));
+  }
+  async function addUser() {
+    const r = await modal((m, close) => {
+      const n = h('input', { class: 'input', autocapitalize: 'none', spellcheck: 'false' });
+      const pw = h('input', { class: 'input', type: 'text', value: genPassword(), spellcheck: 'false' });
+      const adm = h('input', { type: 'checkbox' });
+      m.append(h('form', { onsubmit: (e) => { e.preventDefault(); close({ username: n.value, password: pw.value, is_admin: adm.checked }); } },
+        h('h2', {}, 'Add user'), h('p', {}, 'Share the username and password with them. They can change the password in Settings.'),
+        h('label', { class: 'field' }, h('span', {}, 'Username'), n),
+        h('label', { class: 'field' }, h('span', {}, 'Password'), pw),
+        h('label', { style: 'display:flex;gap:8px;align-items:center;margin:4px 0 14px' }, adm, 'Admin (can manage users)'),
+        h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn', onclick: () => close(null) }, 'Cancel'), h('button', { class: 'btn primary' }, 'Add user'))));
+      setTimeout(() => n.focus());
+    });
+    if (!r) return;
+    try {
+      await api('POST', '/api/admin/users', r);
+      await modal((m, close) => m.append(h('h2', {}, `${r.username.trim().toLowerCase()} can now sign in`), h('p', {}, 'Send them these details:'),
+        h('div', { class: 'kv' }, h('span', {}, 'Address'), h('div', { class: 'mono' }, location.origin), h('span', {}, 'Username'), h('div', { class: 'mono' }, r.username.trim().toLowerCase()), h('span', {}, 'Password'), h('div', { class: 'mono' }, r.password)),
+        h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => { navigator.clipboard.writeText(`Vaultix: ${location.origin}\nUsername: ${r.username.trim().toLowerCase()}\nPassword: ${r.password}`); toast('Copied'); } }, 'Copy'), h('button', { class: 'btn primary', onclick: () => close() }, 'Done'))));
+      loadUsers();
+    } catch (e) { fail(e); }
+  }
+  if (S.me.is_admin) loadUsers();
 
   // Appearance
   {
@@ -1037,6 +1129,26 @@ function settingsView() {
   loadDevices();
   return [toolbar, content];
 }
+const RELEASES = 'https://github.com/siganberg/vaultix/releases/latest';
+function genPassword() {
+  const a = 'abcdefghijkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  const r = crypto.getRandomValues(new Uint32Array(14));
+  return [...r].map((x) => a[x % a.length]).join('').replace(/(.{4})(?=.)/g, '$1-');
+}
+function askPassword(title) {
+  return modal((m, close) => {
+    const pw = h('input', { class: 'input', type: 'text', value: genPassword(), spellcheck: 'false' });
+    m.append(h('form', { onsubmit: (e) => { e.preventDefault(); close(pw.value.length >= 8 ? pw.value : null); } }, h('h2', {}, title),
+      h('p', {}, 'Share it with them; they can change it later in Settings.'), h('label', { class: 'field' }, pw),
+      h('div', { class: 'actions' }, h('button', { type: 'button', class: 'btn', onclick: () => close(null) }, 'Cancel'), h('button', { class: 'btn primary' }, 'Reset password'))));
+    setTimeout(() => pw.select());
+  });
+}
+function confirmBox(title, text, okLabel) {
+  return modal((m, close) => m.append(h('h2', {}, title), h('p', {}, text),
+    h('div', { class: 'actions' }, h('button', { class: 'btn', onclick: () => close(false) }, 'Cancel'), h('button', { class: 'btn danger solid', onclick: () => close(true) }, okLabel))));
+}
+
 function uaName(ua) {
   if (!ua) return 'Unknown browser';
   const b = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : 'Browser';
@@ -1061,7 +1173,10 @@ addEventListener('keydown', (e) => {
 /* ================= boot ================= */
 
 async function boot() {
-  try { S.me = await api('GET', '/api/me'); } catch { return showLogin(); }
+  try { S.me = await api('GET', '/api/me'); } catch {
+    try { if ((await api('GET', '/api/setup')).needed) return showSetup(); } catch {}
+    return showLogin();
+  }
   renderShell();
   loadShares().then(() => { if (S.route === 'files') renderMain(); });
   await route();
