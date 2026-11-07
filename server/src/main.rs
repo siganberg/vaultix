@@ -58,6 +58,8 @@ const ICON: &str = include_str!("../../web/icon.svg");
 const SHARE_HTML: &str = include_str!("../../web/share.html");
 const SHARE_JS: &str = include_str!("../../web/share.js");
 const THEME_JS: &str = include_str!("../../web/theme.js");
+const FILEICONS_JS: &str = include_str!("../../web/fileicons.js");
+const VIEWER_JS: &str = include_str!("../../web/viewer.js");
 
 fn asset(ct: &'static str, body: &'static str, cache: &'static str) -> Response {
     ([(header::CONTENT_TYPE, ct), (header::CACHE_CONTROL, cache)], body).into_response()
@@ -68,6 +70,8 @@ async fn static_fallback(uri: Uri) -> Response {
         "/app.js" => asset("text/javascript; charset=utf-8", APP_JS, "no-cache"),
         "/app.css" => asset("text/css; charset=utf-8", APP_CSS, "no-cache"),
         "/icon.svg" => asset("image/svg+xml", ICON, "public, max-age=86400"),
+        "/fileicons.js" => asset("text/javascript; charset=utf-8", FILEICONS_JS, "no-cache"),
+        "/viewer.js" => asset("text/javascript; charset=utf-8", VIEWER_JS, "no-cache"),
         "/theme.js" => asset("text/javascript; charset=utf-8", THEME_JS, "no-cache"),
         "/share.js" => asset("text/javascript; charset=utf-8", SHARE_JS, "no-cache"),
         p if p.starts_with("/s/") => {

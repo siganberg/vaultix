@@ -53,7 +53,6 @@ const EXT = {
   model: 'stl obj 3mf step stp iges igs f3d dxf scad blend fbx gltf glb',
   code: 'js ts tsx jsx json rs py go c h cpp hpp cs java kt swift rb php sh yml yaml toml xml html css scss sql ini conf cfg lua gcode nc ngc tap',
 };
-const TEXT_EXT = new Set('txt md log csv tsv json js ts tsx jsx rs py go c h cpp hpp cs java kt swift rb php sh yml yaml toml xml html css scss sql ini conf cfg lua gcode nc ngc tap'.split(' '));
 const ext = (n) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : ''; };
 function kind(e) {
   if (e.is_dir) return 'folder';
@@ -61,7 +60,7 @@ function kind(e) {
   for (const k of ['image', 'video', 'audio', 'pdf', 'archive', 'model', 'code']) if (EXT[k].split(' ').includes(x)) return k;
   return 'doc';
 }
-const ficon = (e) => { const k = kind(e); return h('div', { class: 'ficon ' + k }, icon(k === 'doc' ? 'file' : k)); };
+const ficon = (e, big) => h('div', { class: 'ficon' + (big ? ' big' : '') }, FileIcons.el(e.name, e.is_dir, big));
 function fmtSize(b) {
   if (b == null) return '';
   if (b < 1024) return b + ' B';
@@ -139,21 +138,19 @@ function previewEl(e, url) {
   if (k === 'video' && !['mkv', 'avi'].includes(x)) return h('video', { src: url, controls: true, playsinline: true, preload: 'metadata' });
   if (k === 'audio') return h('audio', { src: url, controls: true });
   if (k === 'pdf') return h('iframe', { src: url, title: e.name });
-  if ((TEXT_EXT.has(x) || !e.name.includes('.')) && e.size < 2e6) {
-    const pre = h('pre', {}, 'Loading…');
-    fetch(url).then((r) => r.text()).then((t) => { pre.textContent = t; }).catch(() => { pre.textContent = 'Could not load file.'; });
-    return pre;
-  }
   return null;
 }
 
 function fileView() {
-  const e = { name: INFO.name, is_dir: false, size: INFO.size };
+  const e = { name: INFO.name, is_dir: false, size: INFO.size, mtime: INFO.mtime, path: '' };
   const pv = previewEl(e, fileUrl(''));
+  const full = () => viewer([e], 0);
   frame(h('div', { class: 'sp-card sp-file' },
-    pv ? h('div', { class: 'sp-preview k-' + kind(e) }, pv) : h('div', { class: 'sp-preview none' }, h('div', { class: 'ficon ' + kind(e) }, icon(kind(e) === 'doc' ? 'file' : kind(e)))),
+    pv ? h('div', { class: 'sp-preview k-' + kind(e) }, pv)
+      : h('button', { class: 'sp-preview none', onclick: full, title: 'Open preview' }, ficon(e, true), h('span', { class: 'sp-open' }, icon('eye'), 'Open preview')),
     h('div', { class: 'sp-meta' },
       h('div', { class: 'sp-name' }, h('h1', {}, INFO.name), h('p', {}, `${fmtSize(INFO.size)} · ${fmtDate(INFO.mtime)}`)),
+      h('button', { class: 'btn', onclick: full }, icon('eye'), 'Preview'),
       INFO.allow_download
         ? h('a', { class: 'btn primary', href: fileUrl('', true) }, icon('download'), 'Download')
         : h('span', { class: 'pill' }, icon('eye'), ' View only'))));
@@ -181,7 +178,7 @@ async function folderView(sub) {
   }
   frame(h('div', { class: 'sp-card sp-folder' },
     h('div', { class: 'sp-fhead' },
-      h('div', { class: 'ficon folder', style: 'width:44px;height:44px;border-radius:12px' }, icon('folder')),
+      h('div', { class: 'ficon', style: 'width:46px;height:46px' }, FileIcons.el(INFO.name, true)),
       h('div', { class: 'sp-name' }, h('h1', {}, INFO.name), h('p', {}, `${entries.length} item${entries.length === 1 ? '' : 's'}`)),
       INFO.allow_download
         ? h('a', { class: 'btn primary', href: BASE + '/zip' + (sub ? '?paths=' + encodeURIComponent(JSON.stringify([sub])) : '') }, icon('download'), sub ? 'Download folder' : 'Download all')
@@ -193,26 +190,12 @@ async function folderView(sub) {
 }
 
 function viewer(files, idx) {
-  const body = h('div', { class: 'vb' });
-  const title = h('b');
-  const dl = h('a', { class: 'btn' }, icon('download'), 'Download');
-  const v = h('div', { class: 'viewer' }, h('div', { class: 'vh' }, title, INFO.allow_download ? dl : '', h('button', { class: 'btn icon', onclick: () => close() }, icon('x'))), body);
-  const prev = h('button', { class: 'nav-btn l', onclick: () => step(-1) }, icon('left'));
-  const next = h('button', { class: 'nav-btn r', onclick: () => step(1) }, icon('right'));
-  const close = () => { v.remove(); removeEventListener('keydown', key, true); };
-  const key = (e) => { if (e.key === 'Escape') close(); else if (e.key === 'ArrowLeft') step(-1); else if (e.key === 'ArrowRight') step(1); };
-  const step = (d) => { const n = idx + d; if (n >= 0 && n < files.length) { idx = n; show(); } };
-  function show() {
-    const f = files[idx];
-    title.textContent = f.name;
-    dl.href = fileUrl(f.path, true);
-    const el = previewEl(f, fileUrl(f.path)) || h('div', { class: 'nopv' }, h('div', { class: 'ficon ' + kind(f), style: 'width:72px;height:72px;margin:0 auto 14px;border-radius:18px' }, icon(kind(f) === 'doc' ? 'file' : kind(f))),
-      h('div', { style: 'font-weight:600;color:#fff' }, f.name), h('div', {}, fmtSize(f.size) + ' · No preview available'));
-    body.replaceChildren(el, idx > 0 ? prev : '', idx < files.length - 1 ? next : '');
-  }
-  addEventListener('keydown', key, true);
-  document.body.append(v);
-  show();
+  VXViewer.open({
+    files, index: idx,
+    url: (f) => fileUrl(f.path),
+    meta: (f) => fmtSize(f.size) + ' · ' + fmtDate(f.mtime),
+    downloadHref: INFO.allow_download ? (f) => fileUrl(f.path, true) : null,
+  });
 }
 
 /* ---------- file request ---------- */

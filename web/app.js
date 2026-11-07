@@ -76,7 +76,6 @@ const EXT = {
   model: 'stl obj 3mf step stp iges igs f3d dxf svg scad blend fbx gltf glb',
   doc: 'txt md log csv tsv rtf doc docx odt xls xlsx ods ppt pptx',
 };
-const TEXT_EXT = new Set('txt md log csv tsv json js ts tsx jsx rs py go c h cpp hpp cs java kt swift rb php sh zsh bash yml yaml toml xml html css scss sql ini conf cfg env lua gcode nc ngc tap gitignore dockerfile'.split(' '));
 const ext = (n) => { const i = n.lastIndexOf('.'); return i > 0 ? n.slice(i + 1).toLowerCase() : n.toLowerCase(); };
 function kind(e) {
   if (e.is_dir) return 'folder';
@@ -84,8 +83,8 @@ function kind(e) {
   for (const k of ['image', 'video', 'audio', 'pdf', 'archive', 'model', 'code', 'doc']) if (EXT[k].split(' ').includes(x)) return k;
   return 'doc';
 }
-const KIND_ICON = { folder: 'folder', image: 'image', video: 'video', audio: 'audio', pdf: 'pdf', archive: 'archive', code: 'code', doc: 'file', model: 'model' };
-const ficon = (e) => { const k = kind(e); return h('div', { class: 'ficon ' + k }, icon(KIND_ICON[k])); };
+const ficon = (e, big) => h('div', { class: 'ficon' + (big ? ' big' : '') }, FileIcons.el(e.name, e.is_dir, big));
+const tint = (e) => FileIcons.type(e.name, e.is_dir).color;
 
 function fmtSize(b) {
   if (b == null) return '';
@@ -501,9 +500,9 @@ function filesContent() {
       const k = kind(e);
       const thumb = k === 'image' && e.size < 40e6 && ext(e.name) !== 'heic'
         ? h('img', { src: fileUrl(e.path), loading: 'lazy', decoding: 'async', alt: '' })
-        : ficon(e);
+        : ficon(e, true);
       const t = h('div', { class: 'tile' + (S.sel.has(e.path) ? ' sel' : ''), onclick: onClick(e), oncontextmenu: (ev) => itemMenu(ev, e) },
-        ck(e), h('div', { class: 'thumb' }, thumb),
+        ck(e), h('div', { class: 'thumb', style: '--tint:' + tint(e) }, thumb),
         h('div', { class: 'cap' }, h('b', { title: e.name }, S.sharedPaths.has(e.path) && h('span', { class: 'shared-badge', title: 'Shared' }, icon('link')), e.name), h('small', {}, e.is_dir ? (S.query ? parentOf(e.path) || 'All files' : 'Folder') : fmtSize(e.size) + ' · ' + fmtDate(e.mtime))));
       draggable(t, e);
       if (e.is_dir) dropTarget(t, e.path);
@@ -607,42 +606,12 @@ function moveDialog(items) {
 
 function preview(e) {
   const files = sorted().filter((x) => !x.is_dir);
-  let idx = files.findIndex((x) => x.path === e.path);
-  const body = h('div', { class: 'vb' });
-  const title = h('b');
-  const dl = h('button', { class: 'btn', onclick: () => download([files[idx]]) }, icon('download'), 'Download');
-  const v = h('div', { class: 'viewer' }, h('div', { class: 'vh' }, title, dl, h('button', { class: 'btn icon', onclick: () => close() }, icon('x'))), body);
-  const prev = h('button', { class: 'nav-btn l', onclick: () => step(-1) }, icon('left'));
-  const next = h('button', { class: 'nav-btn r', onclick: () => step(1) }, icon('right'));
-  function close() { v.remove(); removeEventListener('keydown', key, true); }
-  function key(ev) {
-    if (ev.key === 'Escape') { ev.stopPropagation(); close(); }
-    else if (ev.key === 'ArrowLeft') step(-1);
-    else if (ev.key === 'ArrowRight') step(1);
-  }
-  function step(d) { const n = idx + d; if (n >= 0 && n < files.length) { idx = n; show(); } }
-  async function show() {
-    const f = files[idx];
-    title.textContent = f.name;
-    const k = kind(f), url = fileUrl(f.path), x = ext(f.name);
-    let el;
-    if (k === 'image' && x !== 'heic' && x !== 'tif' && x !== 'tiff') el = h('img', { src: url, alt: f.name });
-    else if (k === 'video' && x !== 'mkv' && x !== 'avi') el = h('video', { src: url, controls: true, autoplay: true, playsinline: true });
-    else if (k === 'audio') el = h('audio', { src: url, controls: true, autoplay: true });
-    else if (k === 'pdf') el = h('iframe', { src: url, title: f.name });
-    else if ((TEXT_EXT.has(x) || !f.name.includes('.')) && f.size < 2e6) {
-      el = h('pre', {}, 'Loading…');
-      fetch(url).then((r) => r.text()).then((t) => { el.textContent = t; }).catch(() => { el.textContent = 'Could not load file.'; });
-    } else {
-      el = h('div', { class: 'nopv' }, h('div', { class: 'ficon ' + k, style: 'width:72px;height:72px;margin:0 auto 14px;border-radius:18px' }, icon(KIND_ICON[k])),
-        h('div', { style: 'font-weight:600;color:#fff' }, f.name), h('div', {}, fmtSize(f.size) + ' · No preview available'),
-        h('button', { class: 'btn primary', onclick: () => download([f]) }, icon('download'), 'Download'));
-    }
-    body.replaceChildren(el, idx > 0 ? prev : '', idx < files.length - 1 ? next : '');
-  }
-  addEventListener('keydown', key, true);
-  document.body.append(v);
-  show();
+  VXViewer.open({
+    files, index: Math.max(0, files.findIndex((x) => x.path === e.path)),
+    url: (f) => fileUrl(f.path),
+    meta: (f) => fmtSize(f.size) + ' · ' + fmtDate(f.mtime),
+    download: (f) => download([f]),
+  });
 }
 
 /* ================= uploads ================= */
@@ -1043,7 +1012,7 @@ function settingsView() {
     try { d = await api('GET', '/api/devices'); } catch (e) { return fail(e); }
     cards.devices.replaceChildren(h('h3', {}, icon('key'), 'Devices & app passwords'),
       h('p', {}, 'Desktop sync clients and WebDAV apps each get their own password, so you can revoke one without affecting the others.'),
-      h('div', { class: 'items' }, d.tokens.length ? d.tokens.map((t) => h('div', { class: 'it' }, h('div', { class: 'ficon doc' }, icon('monitor')),
+      h('div', { class: 'items' }, d.tokens.length ? d.tokens.map((t) => h('div', { class: 'it' }, h('div', { class: 'ficon chip' }, icon('monitor')),
         h('div', { class: 't' }, h('b', {}, t.name), h('small', {}, `Created ${fmtDate(t.created_at * 1000)} · ${t.last_used ? 'last used ' + fmtDate(t.last_used * 1000) : 'never used'}`)),
         h('button', { class: 'btn danger', onclick: async () => {
           if (!(await confirm2('Revoke access?', `“${t.name}” will be signed out immediately.`, { ok: 'Revoke', danger: true }))) return;
