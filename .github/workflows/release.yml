@@ -164,7 +164,7 @@ jobs:
             echo "---"
             echo "**Server:** $PULL"
             echo
-            echo "**Apps:** macOS \`.dmg\` · Windows \`-setup.exe\` · Linux \`.deb\` / \`.AppImage\` (headless: \`vaultix-sync\` CLI). See the [install guide](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#install-the-apps)."
+            echo "**Apps:** macOS \`.dmg\` · Windows \`-setup.exe\` · Linux \`.deb\` / \`.AppImage\` (headless: \`vaultix-sync\` CLI). See the [install guide](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}#2-install-the-apps)."
           } >> notes.md
           ls -la dist
       - name: Create or update the release
