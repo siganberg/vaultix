@@ -1,0 +1,5 @@
+target/
+gen/
+ui/common.css
+ui/common.js
+ui/icon.svg

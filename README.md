@@ -1,6 +1,6 @@
 # Vaultix
 
-A small, fast, self-hosted cloud drive. You get one Docker container for the server and web app, plus desktop sync apps for macOS, Windows and Linux. It also speaks WebDAV for everything else.
+A small, fast, self-hosted cloud drive. Run the server as a **desktop app** (no Docker needed) or as a Docker container, and sync with desktop apps for macOS, Windows and Linux. It also speaks WebDAV for everything else.
 
 - **Fast**: async Rust (axum/tokio), streaming uploads and downloads, HTTP range requests (video seeking), BLAKE3 hashing. No PHP and no background-job queue.
 - **Reliable**: your files are stored as plain files on disk (`data/users/<name>/files/`), so nothing can drift out of sync with a database. Uploads are written to a temporary file, flushed, then atomically renamed into place.
@@ -12,6 +12,30 @@ A small, fast, self-hosted cloud drive. You get one Docker container for the ser
 ---
 
 ## 1. Run the server
+
+Pick one. Both give you the same Vaultix; you can move between them later because the data folder has the same layout.
+
+| | Best for |
+|---|---|
+| **A. Vaultix Server app** | a Windows PC, Mac or Linux desktop that stays on. No Docker, no terminal. |
+| **B. Docker** | a NAS, home server or VPS |
+
+### A. Vaultix Server app (no Docker)
+
+1. Download **Vaultix Server** for your computer from the **[latest release](https://github.com/siganberg/vaultix/releases/latest)**: `VaultixServer-<version>.dmg` (macOS), `VaultixServer_<version>_x64-setup.exe` (Windows), or `VaultixServer_<version>_amd64.deb` / `.AppImage` (Linux). The first-launch warnings are the same as for the sync apps; see [Install the apps](#2-install-the-apps).
+2. Open it. Choose where files should be kept (default: a `Vaultix Server` folder in your home folder) and click **Start Server**.
+3. Click **Open Vaultix** and create your admin account in the browser.
+4. The window shows the address for your other devices, for example `http://192.168.1.24:8085`. Type it into a browser, or into the Vaultix app on your other computers.
+
+Good to know:
+
+- Vaultix Server lives in the menu bar or system tray, and starts by itself when you sign in to the computer (you can turn that off). Closing the window keeps it running; **Quit** stops the server.
+- Keep the computer **on and awake**. While it sleeps, other devices can't reach your files.
+- Windows asks once whether to allow Vaultix Server through the firewall. Choose **Allow** for private networks.
+- On the server computer you don't need the sync app: your files are already there as normal files (**Open** next to *Files location*). Changes you make in that folder reach your other devices within seconds.
+- This works on your home network out of the box. To use it away from home, see [Making it reachable from anywhere](#making-it-reachable-from-anywhere-https), or use a private network such as [Tailscale](https://tailscale.com) and connect to the computer's Tailscale address.
+
+### B. Docker
 
 You need Docker on any Linux box, NAS, Mac or Windows PC. Save this as `docker-compose.yml`:
 
@@ -33,13 +57,15 @@ services:
 docker compose up -d
 ```
 
-Open **http://&lt;server-ip&gt;:8085**. The first time, Vaultix asks you to **create the admin account** in the browser. No terminal commands are needed. Then:
+Open **http://&lt;server-ip&gt;:8085**. The first time, Vaultix asks you to **create the admin account** in the browser. No terminal commands are needed.
+
+### After the first start (both options)
 
 1. **Settings → Two-factor authentication** to protect your account.
 2. **Settings → Users → Add user** to give family or teammates their own private drive.
 3. Install the apps (below).
 
-> Do step 1 right after the first start. Until the admin account exists, anyone who can reach the server could create it.
+> Create the admin account right after the first start. Until it exists, anyone who can reach the server could create it.
 
 Images are published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5 and ARM NASes work) on GitHub Container Registry, `ghcr.io/siganberg/vaultix`, and on Docker Hub. Tags:
 
@@ -52,7 +78,7 @@ Images are published for `linux/amd64` and `linux/arm64` (Raspberry Pi 4/5 and A
 
 ### Making it reachable from anywhere (HTTPS)
 
-Put Vaultix behind a reverse proxy with HTTPS before you expose it to the internet. With **Caddy**, add this to your compose file next to Vaultix:
+Put Vaultix behind a reverse proxy with HTTPS before you expose it to the internet. (With the Vaultix Server app, run a reverse proxy such as Caddy on the same computer and point it at `localhost:8085`.) With Docker and **Caddy**, add this to your compose file next to Vaultix:
 
 ```yaml
 services:
@@ -84,8 +110,9 @@ Point `drive.example.com` at your public IP, and forward ports 80 and 443 on you
 | `VAULTIX_COOKIE_SECURE` | `auto` | `auto` = Secure cookies when the proxy says HTTPS (`X-Forwarded-Proto`) |
 | `VAULTIX_ADMIN_USER` / `VAULTIX_ADMIN_PASSWORD` | – | optional: create the admin on first start instead of in the browser |
 | `VAULTIX_DATA`, `VAULTIX_BIND` | `/data`, `0.0.0.0:8080` | rarely needed |
+| `VAULTIX_WATCH` | `0` | `1` = watch the data folder, so files changed directly on disk reach sync clients within seconds (always on in the Vaultix Server app) |
 
-**Backups:** back up the `data` folder. Files are plain files, and the database is `data/vaultix.db`.
+**Backups:** back up the data folder (`./data` with Docker, your *Files location* with the app). Files are plain files, and the database is `data/vaultix.db`.
 
 **Updating:** run `docker compose pull && docker compose up -d`.
 
@@ -93,7 +120,7 @@ Point `drive.example.com` at your public IP, and forward ports 80 and 443 on you
 
 ## 2. Install the apps
 
-Download the app for your computer from the **[latest release](https://github.com/siganberg/vaultix/releases/latest)**. When you open it, a sign-in window asks for:
+Download the **Vaultix** sync app for each computer from the **[latest release](https://github.com/siganberg/vaultix/releases/latest)**. When you open it, a sign-in window asks for:
 
 - **Server**: the address you open in the browser, for example `https://drive.example.com`.
 - **Username** and **password**: if you turned on 2FA, it then asks for the 6-digit code. An *app password* (Settings → Devices & app passwords) also works and skips 2FA.
@@ -198,6 +225,7 @@ cd desktop && cargo tauri dev                              # needs: cargo instal
 | `client/` | sync engine (library + `vaultix-sync` CLI/agent) |
 | `mac/` | macOS menu-bar app (SwiftUI) |
 | `desktop/` | Windows/Linux tray app (Tauri; HTML UI in `desktop/ui`) |
+| `server-app/` | Vaultix Server desktop app (Tauri; runs `server/` in-process) |
 
 ### Releasing
 
@@ -205,7 +233,7 @@ cd desktop && cargo tauri dev                              # needs: cargo instal
 scripts/release.sh 0.4.0 notes.md      # bumps versions, tags v0.4.0 with notes.md as the message, pushes
 ```
 
-The tag triggers `.github/workflows/release.yml`. It builds the multi-arch Docker image (pushed to GHCR, and to Docker Hub when `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets are set), the macOS DMG, the Windows installer, and the Linux `.deb`/`.AppImage`/CLI. It then publishes a GitHub Release with the notes. To edit the notes later, run `scripts/release.sh --notes v0.4.0 notes.md`.
+The tag triggers `.github/workflows/release.yml`. It builds the multi-arch Docker image (pushed to GHCR, and to Docker Hub when `DOCKERHUB_USERNAME`/`DOCKERHUB_TOKEN` secrets are set), plus the sync app and the Vaultix Server app for macOS (DMG), Windows (installer) and Linux (`.deb`/`.AppImage`), and the headless sync CLI. It then publishes a GitHub Release with the notes. To edit the notes later, run `scripts/release.sh --notes v0.4.0 notes.md`.
 
 ## License
 

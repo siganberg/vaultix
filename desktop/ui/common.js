@@ -13,6 +13,8 @@ function h(tag, attrs, ...kids) {
     else if (k === 'class') el.className = v;
     else if (k === 'value') el.value = v;
     else if (k === 'checked') el.checked = !!v;
+    // Tauri's CSP blocks inline style attributes; setting styles from script is allowed.
+    else if (k === 'style') el.style.cssText = v;
     else el.setAttribute(k, v === true ? '' : v);
   }
   for (const c of kids.flat(Infinity)) if (c != null && c !== false && c !== '') el.append(c instanceof Node ? c : String(c));

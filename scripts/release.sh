@@ -36,16 +36,17 @@ git rev-parse -q --verify "refs/tags/$TAG" >/dev/null && die "tag $TAG already e
 echo "Releasing $TAG"
 
 # One version for everything: server, sync engine, desktop app, macOS app.
-for f in server/Cargo.toml client/Cargo.toml desktop/Cargo.toml; do
+for f in server/Cargo.toml client/Cargo.toml desktop/Cargo.toml server-app/Cargo.toml; do
   perl -0pi -e "s/^version = \"[^\"]+\"/version = \"$VERSION\"/m" "$f"
 done
-perl -pi -e "s/\"version\": \"[^\"]+\"/\"version\": \"$VERSION\"/" desktop/tauri.conf.json
+perl -pi -e "s/\"version\": \"[^\"]+\"/\"version\": \"$VERSION\"/" desktop/tauri.conf.json server-app/tauri.conf.json
 
 # Refresh the lockfiles' own entries (no dependency upgrades).
 cargo update -q --workspace --offline 2>/dev/null || cargo update -q --workspace
 (cd desktop && { cargo update -q -p vaultix-desktop -p vaultix-sync --offline 2>/dev/null || cargo update -q -p vaultix-desktop -p vaultix-sync; })
+(cd server-app && { cargo update -q -p vaultix-server-app -p vaultix-server --offline 2>/dev/null || cargo update -q -p vaultix-server-app -p vaultix-server; })
 
-git add server/Cargo.toml client/Cargo.toml desktop/Cargo.toml desktop/tauri.conf.json Cargo.lock desktop/Cargo.lock
+git add server/Cargo.toml client/Cargo.toml desktop/Cargo.toml desktop/tauri.conf.json server-app/Cargo.toml server-app/tauri.conf.json Cargo.lock desktop/Cargo.lock server-app/Cargo.lock
 git commit -q -m "Release $TAG"
 git tag -a "$TAG" --cleanup=verbatim -F "$NOTES_ABS"
 git push -q origin main

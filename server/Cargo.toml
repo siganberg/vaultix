@@ -5,6 +5,14 @@ edition = "2021"
 license = "GPL-3.0-only"
 repository = "https://github.com/siganberg/vaultix"
 
+[lib]
+name = "vaultix_server"
+path = "src/lib.rs"
+
+[[bin]]
+name = "vaultix-server"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"
@@ -17,6 +25,7 @@ filetime = "0.2"
 fs2 = "0.4"
 futures-util = "0.3"
 hex = "0.4"
+notify = "6"
 percent-encoding = "2"
 rand = "0.8"
 rpassword = "7"
